@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Agentic dirs & local configs
+.claude/
+CLAUDE.md
+.agents/
+
+# Env
+.env
+
+# Vector store / data
+data/
+
+# OS
+.DS_Store
