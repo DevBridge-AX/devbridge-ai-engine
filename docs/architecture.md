@@ -68,31 +68,57 @@ FastAPI는 자체적으로 대화 상태를 들고 있지 않습니다. `/chat` 
 - `user_id`
 - `role` (직무 — 페르소나 선택에 사용)
 
-### SSE 스트리밍
+### SSE 스트리밍 — 이벤트 2종
 
-`/chat` 류 엔드포인트는 `StreamingResponse`를 사용해 토큰 단위로 답변을
-스트리밍합니다.
+`/chat` 류 엔드포인트는 `StreamingResponse`로 **두 종류의 이벤트**를 보냅니다.
+답변 텍스트(스트리밍)와 메타데이터(스트림 종료 시 1회)를 분리합니다 —
+`answer_stream`처럼 답변 전체를 하나의 JSON 필드로 묶어 보내지 않습니다.
 
-### 응답 payload 예시
+```
+event: token   (반복)
+data: {"text": "..."}
+
+event: done    (스트림 종료 시 1회)
+data: { ... 아래 "응답 payload" 참고 ... }
+```
+
+### 응답 payload (`done` 이벤트)
 
 ```json
 {
-  "answer_stream": "...",
   "citations": [
-    {"document_id": 1, "chunk_id": 10, "similarity_score": 0.82, "source_type": "code"}
+    {
+      "source_type": "document",
+      "source_id": 1,
+      "chunk_id": 10,
+      "title": "결제 API 문서",
+      "similarity_score": 0.82
+    }
   ],
-  "similarity_scores": [0.82, 0.77],
   "is_groundable": true,
   "confidence": 0.91,
   "suggested_owner_id": 42,
+  "prompt_version": "persona-v1",
   "token_usage": {
     "main": {"model": "claude-sonnet-4-6", "prompt_tokens": 512, "completion_tokens": 128},
-    "rewrite": {"model": "claude-haiku-4-5-20251001", "prompt_tokens": 80, "completion_tokens": 20}
+    "rewrite": {"model": "claude-haiku-4-5-20251001", "prompt_tokens": 80, "completion_tokens": 20},
+    "context_truncated": false
   }
 }
 ```
 
-Spring은 이 응답을 받아:
+- `citations[].source_type`은 `document` / `git_commit` / `db_schema` 중 하나이며,
+  `source_id`는 해당 테이블(`KNOWLEDGE_DOCUMENTS`/`GIT_COMMITS`/`DATABASE_SCHEMAS`)의
+  PK, `chunk_id`는 `document_chunks.id`입니다. 이 구조는 `MESSAGE_CITATIONS`의
+  `source_type`/`source_id`/`vector_chunk_id`/`similarity_score`에 1:1
+  매핑됩니다. `title`은 Spring/프론트 표시용 라벨로, FastAPI가 인덱싱 시점에
+  확보한 정보를 이용해 응답 시점에 채워줍니다.
+- `prompt_version`은 사용된 persona 템플릿 버전이며 `CHAT_MESSAGES.prompt_version`에
+  저장됩니다.
+- `token_usage.context_truncated`는 입력 토큰이 한도에 근접해 RAG 컨텍스트/히스토리를
+  줄였는지를 나타내는 모니터링용 플래그입니다.
+
+Spring은 `done` payload를 받아:
 
 - `CHAT_MESSAGES`, `MESSAGE_CITATIONS`에 저장
 - `is_groundable` / `confidence`를 임계치와 비교해 UC-04 알림(`NOTIFICATIONS`)
@@ -123,11 +149,20 @@ Spring은 이 응답을 받아:
 
 ```
 document_chunks
-├── content                   (원문, 불변, source of truth)
-├── embedding                 (벡터, derived — 재생성 가능)
+├── source_type                (document / git_commit / db_schema)
+├── source_id                  (위 source_type에 해당하는 테이블의 PK)
+├── content                    (원문, 불변, source of truth)
+├── embedding                  (벡터, derived — 재생성 가능)
 ├── embedding_model            (현재 기본값: text-embedding-3-large)
-└── embedding_model_version    (예: v1)
+├── embedding_model_version    (예: v1)
+├── vector_id                  (Chroma/FAISS 내 실제 벡터 참조)
+└── workspace_id               (워크스페이스별 격리)
 ```
+
+`source_type` + `source_id`는 단일 `document_id` FK가 아니라, 이 청크가
+`KNOWLEDGE_DOCUMENTS` / `GIT_COMMITS` / `DATABASE_SCHEMAS` 중 어디에서 왔는지를
+표현합니다. `/chat` 응답의 `citations[]`도 동일한 `source_type`/`source_id`
+구조를 사용합니다 (3장 참고).
 
 임베딩 모델을 교체/업그레이드할 때는:
 
@@ -156,21 +191,28 @@ turn 2+  : user_query + conversation_history ─► query_rewriter ─► rewrit
 
 대상 역할: 기획자, 개발자, QA, 디자이너, 운영자, 신규투입자
 
-각 역할별 시스템 프롬프트는 다음 동적 변수를 채워 렌더링됩니다:
+각 역할별 시스템 프롬프트는 다음 동적 변수를 채워 렌더링됩니다 (1차 범위):
 
 - `retrieved_context` — RAG로 검색된 문서/코드/Git 컨텍스트
 - `conversation_history` — Spring이 전달한 대화 히스토리
-- `user_preference_summary` — 아래 4.4 참고
 
-### 4.4 user_preference_summary 격리
+직무별 번역(예: 개발자 산출물을 디자이너가 이해하기 쉽게)은 `role` 필드에 따른
+6종 템플릿 선택만으로 처리됩니다. `user_preference_summary`(같은 역할 내
+개인별 스타일 차이)는 2차 변수로, 1차 템플릿에는 포함하지 않습니다.
+
+### 4.4 user_preference_summary (2차 예정 — 보류)
+
+같은 직무(role) 내에서도 개인별 코드 스타일/표현 선호가 다를 수 있다는 점을
+반영하는 레이어이지만, 1차에는 구현하지 않습니다. 사용 데이터가 쌓인 뒤 2차에서
+재검토합니다. 도입 시 격리 키:
 
 ```
 key = (user_id, workspace_id)
 ```
 
-한 사용자가 여러 워크스페이스에 속할 수 있으므로, preference summary는 반드시
-`(user_id, workspace_id)` 복합키로 조회/저장되어야 하며, 워크스페이스 간 데이터
-혼입이 발생하면 안 됩니다.
+한 사용자가 여러 워크스페이스에 속할 수 있으므로, 도입 시 preference summary는
+반드시 `(user_id, workspace_id)` 복합키로 조회/저장되어야 하며, 워크스페이스 간
+데이터 혼입이 발생하면 안 됩니다.
 
 ### 4.5 신뢰도/그라운딩 판정
 
