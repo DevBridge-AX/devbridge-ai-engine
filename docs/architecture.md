@@ -23,6 +23,8 @@
   있고 테이블 소유권은 위와 같이 명확히 나뉩니다.
 - 벡터스토어는 별도 서버 없이 파일 기반으로 동작하며, 온디바이스 전환 시 해당
   경로(`VECTOR_STORE_PATH`)를 그대로 이동하면 됩니다.
+- Spring → FastAPI 요청은 `X-Internal-Api-Key` 헤더로 인증되며, FastAPI는 외부에
+  노출되지 않는 내부망에서만 접근 가능합니다 (3장 참고).
 
 ## 2. 테이블 소유권 경계
 
@@ -35,6 +37,7 @@
 | `DATABASE_SCHEMAS` | 인덱싱된 DB 스키마 정보 |
 | `GIT_COMMITS` | Git 커밋 메타데이터 (`author_id`는 Spring `USERS.id`로 사전 매핑됨) |
 | `document_chunks` | RAG 청크 (원문 + 임베딩 + 모델 버전) |
+| `usage_logs` | 워크스페이스별 일 단위 임베딩 토큰 사용량 집계 |
 
 ### Spring(`backend` 레포)이 소유 — FastAPI는 접근 금지
 
@@ -45,6 +48,15 @@
 [`.claude/rules/db-boundary.md`](../.claude/rules/db-boundary.md) 참고.
 
 ## 3. 통신 원칙
+
+### 인증
+
+Spring → FastAPI의 모든 요청에는 `X-Internal-Api-Key` 헤더가 포함되어야 하며,
+`.env`의 `INTERNAL_API_KEY`와 일치하지 않으면 401을 반환합니다
+(`app/core/security.py`). 이 레포는 최종 사용자 인증을 직접 수행하지 않으며,
+Spring이 이미 인증/인가를 마친 뒤 전달하는 `workspace_id` / `user_id` / `role`을
+신뢰합니다. FastAPI는 외부에 직접 노출되지 않는 내부망(Docker 네트워크 등)에서만
+접근 가능해야 합니다.
 
 ### Stateless 추론 엔진
 
@@ -61,7 +73,7 @@ FastAPI는 자체적으로 대화 상태를 들고 있지 않습니다. `/chat` 
 `/chat` 류 엔드포인트는 `StreamingResponse`를 사용해 토큰 단위로 답변을
 스트리밍합니다.
 
-### 응답 payload
+### 응답 payload 예시
 
 ```json
 {
@@ -73,7 +85,10 @@ FastAPI는 자체적으로 대화 상태를 들고 있지 않습니다. `/chat` 
   "is_groundable": true,
   "confidence": 0.91,
   "suggested_owner_id": 42,
-  "token_usage": {"prompt_tokens": 512, "completion_tokens": 128}
+  "token_usage": {
+    "main": {"model": "claude-sonnet-4-6", "prompt_tokens": 512, "completion_tokens": 128},
+    "rewrite": {"model": "claude-haiku-4-5-20251001", "prompt_tokens": 80, "completion_tokens": 20}
+  }
 }
 ```
 
@@ -82,9 +97,12 @@ Spring은 이 응답을 받아:
 - `CHAT_MESSAGES`, `MESSAGE_CITATIONS`에 저장
 - `is_groundable` / `confidence`를 임계치와 비교해 UC-04 알림(`NOTIFICATIONS`)
   트리거 여부 결정
+- `token_usage`의 모델별 raw 토큰 수치에 자체 Credit 단가표를 적용해
+  `estimated_cost`를 계산·저장
 
-**FastAPI는 값만 계산해서 반환하고, 저장/임계치 판단/알림은 모두 Spring의
-책임입니다.**
+**FastAPI는 값(및 raw 토큰 수치)만 계산해서 반환하고, 저장/임계치 판단/알림/단가
+적용은 모두 Spring의 책임입니다.** turn 1에서는 `rewrite`가 호출되지 않으므로
+`token_usage.rewrite`는 `null`입니다.
 
 ### GIT_COMMITS.author_id 매핑
 
@@ -107,7 +125,7 @@ Spring은 이 응답을 받아:
 document_chunks
 ├── content                   (원문, 불변, source of truth)
 ├── embedding                 (벡터, derived — 재생성 가능)
-├── embedding_model            (예: placeholder-embedding-model)
+├── embedding_model            (현재 기본값: text-embedding-3-large)
 └── embedding_model_version    (예: v1)
 ```
 
@@ -129,7 +147,10 @@ turn 2+  : user_query + conversation_history ─► query_rewriter ─► rewrit
 - `query_rewriter`는 turn 1에는 호출되지 않습니다.
 - turn 2+에서는 대화 히스토리를 참고해 검색에 적합한 독립 쿼리로 재구성합니다.
 - query_rewriter를 포함한 모든 LLM 호출은 `provider.py`의 추상 인터페이스를
-  통해서만 이루어지며, 구체 모델은 현재 placeholder입니다.
+  통해서만 이루어집니다. 현재 기본 설정(`.env`)은 메인 답변 생성/페르소나
+  변환/그라운딩 판정에 `claude-sonnet-4-6`, 쿼리 재구성에
+  `claude-haiku-4-5-20251001`을 사용합니다. 모델 교체는 `.env` 값만 변경하면
+  됩니다.
 
 ### 4.3 페르소나 변환 (6종)
 
@@ -187,6 +208,19 @@ is_groundable / confidence (LLM structured output, 최종 판단)
 - `dataset_version` 기록
 - `is_faq` / `owner_verified` 등 `OWNER_CONFIRMATIONS` 관련 값은 Spring이 전달한
   데이터를 기준으로 채우며, 이 레포가 해당 테이블을 직접 조회하지 않습니다.
+
+### 4.7 사용량 로깅과 비용 추적
+
+채팅 비용과 인덱싱 비용은 추적 방식이 다릅니다.
+
+- **채팅 비용**: `/chat` 응답의 `token_usage.main` / `token_usage.rewrite`에
+  모델별 raw 토큰 수치를 담아 반환합니다. Credit 단가표는 Spring이 관리하며,
+  `estimated_cost` 계산·저장은 Spring의 책임입니다.
+- **인덱싱(임베딩) 비용**: 채팅 메시지와 무관한 백그라운드 비용이므로,
+  `usage_logs` 테이블(`workspace_id`, `date`, `embedding_model`,
+  `embedding_tokens`)에 일 단위로 누적합니다. `app/api/usage.py`의
+  `/usage/summary?workspace_id=`를 통해 Spring에 집계값을 제공하며, 이 레포는
+  단가를 알지 못하고 토큰 수치만 반환합니다.
 
 ## 5. 1차 구현 범위
 
