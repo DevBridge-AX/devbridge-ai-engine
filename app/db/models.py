@@ -107,7 +107,7 @@ class GitCommit(Base):
         ForeignKey("DATA_SOURCES.id"), nullable=True
     )
     commit_hash: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
-    author_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    author_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     author_name: Mapped[str] = mapped_column(String(255), nullable=False)
     author_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
