@@ -13,6 +13,7 @@ TODO:
 
 from fastapi import FastAPI
 
+from app.api import ingestion
 from app.config import get_settings
 
 settings = get_settings()
@@ -23,10 +24,11 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# TODO: 라우터 구현 후 활성화
-# from app.api import chat, ingestion
+app.include_router(ingestion.router, prefix="/api/ingestion", tags=["ingestion"])
+
+# TODO: chat 라우터 구현 후 활성화
+# from app.api import chat
 # app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
-# app.include_router(ingestion.router, prefix="/api/ingestion", tags=["ingestion"])
 
 
 @app.get("/health", tags=["health"])

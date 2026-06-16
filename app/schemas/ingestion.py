@@ -1,17 +1,40 @@
 """
 인덱싱(문서/Git) 요청/응답 Pydantic 스키마.
 
-TODO:
-- DocumentIngestionRequest, GitIngestionRequest 필드 정의
-- GitIngestionRequest에는 Spring 사용자조회 API 매핑에 필요한 커밋 작성자 식별 정보 포함
+호출 주체는 Spring datasource 도메인입니다. 사용자가 datasource를 등록하면
+Spring이 이 엔드포인트를 호출하며, FastAPI는 202를 즉시 반환하고 백그라운드에서
+인덱싱을 처리합니다.
 """
+
+from datetime import datetime
 
 from pydantic import BaseModel
 
 
 class DocumentIngestionRequest(BaseModel):
-    """문서 업로드/인덱싱 요청 스키마. TODO: 필드 정의."""
+    """POST /ingestion/document 요청 스키마."""
+
+    workspace_id: int
+    data_source_id: int | None = None
+    title: str
+    doc_type: str
+    file_path: str
+
+
+class CommitData(BaseModel):
+    """git_ingestion에서 처리할 개별 커밋 데이터."""
+
+    commit_hash: str
+    author_name: str
+    author_email: str
+    message: str
+    committed_at: datetime
+    diff: str
 
 
 class GitIngestionRequest(BaseModel):
-    """Git push 인덱싱 요청 스키마. TODO: 필드 정의."""
+    """POST /ingestion/git 요청 스키마."""
+
+    workspace_id: int
+    data_source_id: int | None = None
+    commits: list[CommitData]
