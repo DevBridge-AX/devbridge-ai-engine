@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     # provider.py 컨텍스트 길이 가드
     max_context_tokens: int = 30000
 
+    # 그라운딩 유사도 1차 필터 임계치
+    # 0.4 근거: 코사인 유사도 0.3은 노이즈 수준의 매칭이 많이 포함되는 반면,
+    # 0.4 이상부터 의미 있는 의미 유사성이 성립하는 것으로 실험적으로 알려져 있습니다.
+    # 실제 서비스 데이터로 정밀 조정이 필요합니다.
+    grounding_similarity_threshold: float = 0.4
+
     # Spring backend(backend 레포) 연동
     spring_backend_base_url: str = "http://localhost:8080"
     spring_user_lookup_path: str = "/internal/users/lookup"
