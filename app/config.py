@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     app_env: str = "local"
     log_level: str = "INFO"
 
+    # Internal API 인증 (Spring -> FastAPI, X-Internal-Api-Key 헤더)
+    internal_api_key: str = "changeme"
+
     # Database (AI 도메인 전용 스키마, Spring과 별도 DB 계정)
     database_url: str = "mysql+pymysql://ai_engine_user:changeme@localhost:3306/devbridge_ai"
 
@@ -28,13 +31,17 @@ class Settings(BaseSettings):
     vector_store_path: str = "./data/vector_store"
 
     # Embeddings
-    embedding_model: str = "placeholder-embedding-model"
+    embedding_model: str = "text-embedding-3-large"
     embedding_model_version: str = "v1"
+    embedding_api_key: str = ""
 
-    # LLM provider (구체 모델 미정 - placeholder)
-    llm_api_key: str = "placeholder-api-key"
-    llm_api_base_url: str = "https://api.placeholder-llm.example.com"
-    llm_model_name: str = "placeholder-model"
+    # LLM provider (core/llm/provider.py 추상 인터페이스 뒤에서 사용)
+    anthropic_api_key: str = ""
+    main_model: str = "claude-sonnet-4-6"
+    rewrite_model: str = "claude-haiku-4-5-20251001"
+
+    # provider.py 컨텍스트 길이 가드
+    max_context_tokens: int = 30000
 
     # Spring backend(backend 레포) 연동
     spring_backend_base_url: str = "http://localhost:8080"
