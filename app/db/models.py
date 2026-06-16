@@ -16,7 +16,6 @@ import enum
 from datetime import date as date_, datetime
 
 from sqlalchemy import (
-    BigInteger,
     Date,
     DateTime,
     Enum,
@@ -24,6 +23,7 @@ from sqlalchemy import (
     Index,
     Integer,
     JSON,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -170,7 +170,7 @@ class UsageLog(Base):
     workspace_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     date: Mapped[date_] = mapped_column(Date, nullable=False)
     embedding_model: Mapped[str] = mapped_column(String(100), nullable=False)
-    embedding_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    embedding_tokens: Mapped[float] = mapped_column(Numeric(12, 1), nullable=False, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (

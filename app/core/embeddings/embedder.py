@@ -21,6 +21,7 @@ import httpx
 from app.config import get_settings
 
 _BATCH_SIZE = 100  # batchEmbedContents 최대 100건
+_TOKENS_PER_TEXT = 0.2  # GMS 고정 과금 단위 (텍스트 1건당 0.2 토큰)
 
 
 @dataclass
@@ -28,7 +29,7 @@ class EmbedResult:
     embeddings: list[list[float]]
     embedding_model: str
     embedding_model_version: str
-    total_tokens: int
+    total_tokens: float
 
 
 async def embed_texts(texts: list[str]) -> EmbedResult:
@@ -68,5 +69,5 @@ async def embed_texts(texts: list[str]) -> EmbedResult:
         embeddings=all_embeddings,
         embedding_model=settings.embedding_model,
         embedding_model_version=settings.embedding_model_version,
-        total_tokens=0,  # Gemini 임베딩 API는 토큰 수 미제공 : 토큰 계산 어떻게 ?!
+        total_tokens=len(texts) * _TOKENS_PER_TEXT,
     )
