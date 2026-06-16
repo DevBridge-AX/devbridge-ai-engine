@@ -40,7 +40,8 @@ class Settings(BaseSettings):
     # LLM provider (core/llm/provider.py 추상 인터페이스 뒤에서 사용)
     anthropic_api_key: str = ""
     main_model: str = "claude-sonnet-4-6"
-    rewrite_model: str = "claude-haiku-4-5-20251001"
+    rewrite_model: str = "claude-haiku-4-5-20251001"   # 멀티턴 쿼리 재구성
+    grounding_model: str = "gemini-3.5-flash-lite"     # 그라운딩 이진 판정 전용
 
     # provider.py 컨텍스트 길이 가드
     max_context_tokens: int = 30000

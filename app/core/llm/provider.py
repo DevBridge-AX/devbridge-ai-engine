@@ -2,12 +2,17 @@
 LLM API 클라이언트 (Anthropic Claude).
 
 모든 LLM 호출은 이 모듈의 함수를 통해서만 이루어집니다.
-모델 교체는 config.py의 MAIN_MODEL / REWRITE_MODEL 값만 변경하면 됩니다.
+모델 교체는 config.py(또는 .env)의 값만 변경하면 됩니다.
 
-call_main()        — 메인 답변 생성 (non-streaming)
-call_main_stream() — 메인 답변 생성 (SSE 스트리밍 async generator)
-call_rewrite()     — 쿼리 재구성 (경량 모델)
-call_structured()  — JSON 구조화 응답 (grounding 판정 등)
+call_main()        — 메인 답변 생성 (non-streaming)            MAIN_MODEL
+call_main_stream() — 메인 답변 생성 (SSE 스트리밍 async generator) MAIN_MODEL
+call_rewrite()     — 멀티턴 쿼리 재구성                         REWRITE_MODEL
+call_grounding()   — 그라운딩 이진 판정, JSON dict 반환         GROUNDING_MODEL
+call_structured()  — JSON 구조화 응답 범용                      MAIN_MODEL
+
+주의: GROUNDING_MODEL이 비-Anthropic 모델(gemini 등)인 경우 GMS 프록시가
+API 라우팅을 처리한다고 가정합니다. 프록시 경로·인증이 다르면
+call_grounding의 URL/헤더를 별도로 분리해야 합니다.
 """
 
 import json
@@ -146,6 +151,57 @@ async def call_rewrite(
         completion_tokens=data["usage"]["output_tokens"],
     )
     return text, usage
+
+
+_GROUNDING_SYSTEM_PROMPT = """\
+검색된 컨텍스트가 사용자 질문에 답변 가능한지 평가하세요.
+
+반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트는 포함하지 마세요.
+{"is_groundable": true/false, "confidence": 0.0~1.0}\
+"""
+
+
+async def call_grounding(prompt: str) -> tuple[dict, LLMUsage]:
+    """GROUNDING_MODEL로 그라운딩 이진 판정을 수행하고 파싱된 dict를 반환합니다.
+
+    Args:
+        prompt: "질문: ...\n\n검색된 컨텍스트:\n..." 형식의 판정 입력.
+
+    Returns:
+        ({"is_groundable": bool, "confidence": float}, LLMUsage).
+        파싱 실패 시 ({"is_groundable": False, "confidence": 0.0}, usage) 반환.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    settings = get_settings()
+    body = {
+        "model": settings.grounding_model,
+        "max_tokens": 64,
+        "system": _GROUNDING_SYSTEM_PROMPT,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(_ANTHROPIC_API_URL, headers=_headers(settings.anthropic_api_key), json=body)
+        resp.raise_for_status()
+        data = resp.json()
+
+    text = data["content"][0]["text"].strip()
+    usage = LLMUsage(
+        model=settings.grounding_model,
+        prompt_tokens=data["usage"]["input_tokens"],
+        completion_tokens=data["usage"]["output_tokens"],
+    )
+
+    if text.startswith("```"):
+        lines = text.splitlines()
+        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+
+    try:
+        return json.loads(text), usage
+    except json.JSONDecodeError:
+        logger.warning("call_grounding: JSON 파싱 실패, 폴백 반환. 응답: %r", text)
+        return {"is_groundable": False, "confidence": 0.0}, usage
 
 
 async def call_structured(
