@@ -30,10 +30,12 @@ class Settings(BaseSettings):
     vector_store_provider: str = "chroma"
     vector_store_path: str = "./data/vector_store"
 
-    # Embeddings
-    embedding_model: str = "text-embedding-3-large"
+    # Embeddings (현재: Gemini Embedding via GMS 프록시)
+    # embedding_api_base_url + embedding_model 조합으로 엔드포인트 URL을 구성합니다.
+    embedding_api_base_url: str = "https://gms.ssafy.io/gmsapi/generativelanguage.googleapis.com/v1beta/models"
+    embedding_model: str = "gemini-embedding-2"
     embedding_model_version: str = "v1"
-    embedding_api_key: str = ""
+    embedding_api_key: str = ""  # GMS_KEY
 
     # LLM provider (core/llm/provider.py 추상 인터페이스 뒤에서 사용)
     anthropic_api_key: str = ""
