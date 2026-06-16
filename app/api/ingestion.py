@@ -1,25 +1,68 @@
 """
 문서/Git push 인덱싱 엔드포인트.
 
-업로드된 문서 또는 Git push 이벤트를 받아 pipelines.document_ingestion /
-pipelines.git_ingestion으로 위임하여 청킹 -> 임베딩 -> document_chunks 저장을 수행합니다.
+호출 주체: Spring datasource 도메인. 사용자가 datasource를 등록하면 Spring이
+이 엔드포인트를 호출합니다. FastAPI는 202를 즉시 반환하고 BackgroundTasks로
+파이프라인을 실행합니다.
 
-TODO:
-- POST /ingestion/documents (문서 업로드/인덱싱)
-- POST /ingestion/git (Git push 변경분 인덱싱)
-- GIT_COMMITS.author_id는 인덱싱 시점에 Spring 사용자조회 API로 USERS.id를 매핑해 저장
-  (채팅 시점에는 추가 조회 없이 그대로 반환)
+POST /ingestion/document — KNOWLEDGE_DOCUMENTS 레코드 생성(status=pending) 후 인덱싱 트리거
+POST /ingestion/git      — Git 커밋 인덱싱 트리거
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks, Depends, status
+from sqlalchemy.orm import Session
+
+from app.core.security import verify_internal_api_key
+from app.db.models import KnowledgeDocument
+from app.db.session import get_db
+from app.pipelines.document_ingestion import ingest_document
+from app.pipelines.git_ingestion import ingest_git_commits
+from app.schemas.ingestion import DocumentIngestionRequest, GitIngestionRequest
 
 router = APIRouter()
 
-# TODO: 문서/Git 인덱싱 엔드포인트 구현
-# @router.post("/documents")
-# async def ingest_document(request: DocumentIngestionRequest):
-#     ...
-#
-# @router.post("/git")
-# async def ingest_git_push(request: GitIngestionRequest):
-#     ...
+
+@router.post("/document", status_code=status.HTTP_202_ACCEPTED)
+async def ingest_document_endpoint(
+    request: DocumentIngestionRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_internal_api_key),
+) -> dict:
+    """문서 인덱싱을 예약합니다. 완료 여부는 KNOWLEDGE_DOCUMENTS.status로 확인합니다."""
+    doc = KnowledgeDocument(
+        workspace_id=request.workspace_id,
+        data_source_id=request.data_source_id,
+        title=request.title,
+        doc_type=request.doc_type,
+        source_path=request.file_path,
+        status="pending",
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+
+    background_tasks.add_task(
+        ingest_document,
+        workspace_id=request.workspace_id,
+        knowledge_document_id=doc.id,
+        file_path=request.file_path,
+        doc_type=request.doc_type,
+    )
+    return {"knowledge_document_id": doc.id, "status": "pending"}
+
+
+@router.post("/git", status_code=status.HTTP_202_ACCEPTED)
+async def ingest_git_endpoint(
+    request: GitIngestionRequest,
+    background_tasks: BackgroundTasks,
+    _: None = Depends(verify_internal_api_key),
+) -> dict:
+    """Git 커밋 인덱싱을 예약합니다. 이미 인덱싱된 커밋은 건너뜁니다."""
+    background_tasks.add_task(
+        ingest_git_commits,
+        workspace_id=request.workspace_id,
+        data_source_id=request.data_source_id,
+        commits=request.commits,
+    )
+    return {"status": "accepted", "commit_count": len(request.commits)}

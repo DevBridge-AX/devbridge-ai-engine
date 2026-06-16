@@ -1,23 +1,151 @@
 """
-Git push 변경분 수집 파이프라인.
+Git 커밋 수집/임베딩/인덱싱 파이프라인.
 
-Git push 이벤트로 전달된 변경 커밋/파일을 수집하여 GIT_COMMITS 테이블에 저장하고,
-변경된 코드 파일을 chunker -> embedder를 거쳐 document_chunks로 인덱싱합니다.
+흐름: 커밋별 author_email → Spring /internal/users/lookup → author_id(UUID) 매핑
+      → GIT_COMMITS 저장 → message+diff 청킹 → 임베딩 → document_chunks + vector_store
+      → usage_logs 누적
 
-GIT_COMMITS.author_id 매핑:
-- 인덱싱 시점에 Spring의 사용자조회 API를 호출하여 커밋 작성자(Git 계정)를 USERS.id로
-  미리 매핑해 author_id에 저장합니다.
-- 채팅 응답 시점에는 이 값을 그대로 반환하며 추가 조회를 하지 않습니다.
+author_email 조회 실패(404 또는 네트워크 오류)는 경고 로그만 남기고
+author_id=None으로 진행합니다. 이미 인덱싱된 커밋(commit_hash 중복)은 건너뜁니다.
 
-TODO:
-- ingest_git_push(payload) 구현
-- Spring 사용자조회 API 호출 클라이언트 (httpx, config.spring_backend_base_url +
-  config.spring_user_lookup_path 사용)
-- 변경 파일 -> core.rag.chunker.chunk_document -> core.embeddings.embedder.embed_texts
-  -> db.vector_store.VectorStore.add
+확인 필요:
+- 이 파이프라인은 실패 시 전체 롤백합니다. 부분 성공(일부 커밋만 인덱싱됨)을
+  허용하려면 커밋별 트랜잭션으로 변경이 필요합니다.
 """
 
+import logging
+import uuid
 
-async def ingest_git_push(payload: dict) -> None:
-    """Git push 변경분을 인덱싱. TODO: 구현."""
-    raise NotImplementedError
+import httpx
+from sqlalchemy import select
+
+from app.config import get_settings
+from app.core.embeddings.embedder import embed_texts
+from app.core.rag.chunker import chunk_document
+from app.db.models import ChunkSourceType, DocumentChunk, GitCommit
+from app.db.session import SessionLocal, log_embedding_usage
+from app.db.vector_store import get_vector_store
+from app.schemas.ingestion import CommitData
+
+logger = logging.getLogger(__name__)
+
+
+async def ingest_git_commits(
+    workspace_id: int,
+    data_source_id: int | None,
+    commits: list[CommitData],
+) -> None:
+    """Git 커밋 인덱싱 백그라운드 태스크."""
+    with SessionLocal() as db:
+        try:
+            total_tokens, embedding_model = await _run(
+                db, workspace_id, data_source_id, commits
+            )
+            if total_tokens > 0:
+                log_embedding_usage(db, workspace_id, embedding_model, total_tokens)
+            db.commit()
+        except Exception:
+            logger.exception("git_ingestion failed: workspace_id=%d", workspace_id)
+            db.rollback()
+
+
+async def _run(
+    db,
+    workspace_id: int,
+    data_source_id: int | None,
+    commits: list[CommitData],
+) -> tuple[int, str]:
+    settings = get_settings()
+    vector_store = get_vector_store()
+    total_tokens = 0
+    last_model = settings.embedding_model
+
+    for commit in commits:
+        existing = db.execute(
+            select(GitCommit).where(
+                GitCommit.workspace_id == workspace_id,
+                GitCommit.commit_hash == commit.commit_hash,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            logger.info("git_ingestion: skipping already-indexed commit %s", commit.commit_hash)
+            continue
+
+        author_id = await _lookup_author_id(commit.author_email, settings)
+
+        git_commit = GitCommit(
+            workspace_id=workspace_id,
+            data_source_id=data_source_id,
+            commit_hash=commit.commit_hash,
+            author_id=author_id,
+            author_name=commit.author_name,
+            author_email=commit.author_email,
+            message=commit.message,
+            committed_at=commit.committed_at,
+        )
+        db.add(git_commit)
+        db.flush()
+
+        text = f"{commit.message}\n\n{commit.diff}"
+        chunks = chunk_document(text, doc_type="git_diff")
+        if not chunks:
+            continue
+
+        result = await embed_texts([c.content for c in chunks])
+        total_tokens += result.total_tokens
+        last_model = result.embedding_model
+
+        pending: list[tuple[DocumentChunk, list[float], str]] = []
+        for chunk, embedding in zip(chunks, result.embeddings):
+            vector_id = str(uuid.uuid4())
+            doc_chunk = DocumentChunk(
+                workspace_id=workspace_id,
+                source_type=ChunkSourceType.GIT_COMMIT,
+                source_id=git_commit.id,
+                content=chunk.content,
+                chunk_metadata={**chunk.chunk_metadata, "commit_hash": commit.commit_hash},
+                embedding_model=result.embedding_model,
+                embedding_model_version=result.embedding_model_version,
+                vector_id=vector_id,
+            )
+            db.add(doc_chunk)
+            pending.append((doc_chunk, embedding, vector_id))
+
+        db.flush()
+
+        for doc_chunk, embedding, vector_id in pending:
+            vector_store.add(
+                vector_id=vector_id,
+                chunk_id=doc_chunk.id,
+                embedding=embedding,
+                metadata={
+                    "source_type": ChunkSourceType.GIT_COMMIT.value,
+                    "source_id": git_commit.id,
+                },
+                workspace_id=workspace_id,
+            )
+
+    return total_tokens, last_model
+
+
+async def _lookup_author_id(email: str, settings) -> str | None:
+    """Spring /internal/users/lookup API로 author_email을 USERS.id(UUID)로 매핑합니다.
+
+    404(사용자 없음) 또는 네트워크 오류 시 None을 반환하며 인덱싱은 계속됩니다.
+    """
+    try:
+        url = f"{settings.spring_backend_base_url}{settings.spring_user_lookup_path}"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                url,
+                params={"email": email},
+                headers={"X-Internal-Api-Key": settings.internal_api_key},
+            )
+        if resp.status_code == 404:
+            logger.warning("git_ingestion: user not found for email=%s", email)
+            return None
+        resp.raise_for_status()
+        return resp.json()["user_id"]
+    except Exception:
+        logger.warning("git_ingestion: author_id lookup failed for email=%s", email, exc_info=True)
+        return None
