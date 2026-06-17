@@ -1,21 +1,26 @@
 """
-LLM API 클라이언트 (Anthropic Claude).
+LLM API 클라이언트 — GMS 멀티 프로바이더 게이트웨이.
 
 모든 LLM 호출은 이 모듈의 함수를 통해서만 이루어집니다.
-모델 교체는 config.py(또는 .env)의 값만 변경하면 됩니다.
+모델명 prefix로 provider를 자동 감지하며, 단일 GMS_API_KEY로 인증합니다.
+모델 교체는 .env 값만 변경하면 됩니다 (코드 변경 불필요).
 
-call_main()        — 메인 답변 생성 (non-streaming)            MAIN_MODEL
-call_main_stream() — 메인 답변 생성 (SSE 스트리밍 async generator) MAIN_MODEL
-call_rewrite()     — 멀티턴 쿼리 재구성                         REWRITE_MODEL
-call_grounding()   — 그라운딩 이진 판정, JSON dict 반환         GROUNDING_MODEL
-call_structured()  — JSON 구조화 응답 범용                      MAIN_MODEL
+call_main()        — 메인 답변 생성 (non-streaming)              MAIN_MODEL    (claude-*)
+call_main_stream() — 메인 답변 생성 (Anthropic SSE 스트리밍)     MAIN_MODEL    (claude-*)
+call_rewrite()     — 멀티턴 쿼리 재구성                           REWRITE_MODEL (gpt-*)
+call_grounding()   — 그라운딩 이진 판정, JSON dict 반환           GROUNDING_MODEL (gemini-*)
+call_structured()  — JSON 구조화 응답 범용                        MAIN_MODEL    (claude-*)
 
-주의: GROUNDING_MODEL이 비-Anthropic 모델(gemini 등)인 경우 GMS 프록시가
-API 라우팅을 처리한다고 가정합니다. 프록시 경로·인증이 다르면
-call_grounding의 URL/헤더를 별도로 분리해야 합니다.
+provider 자동 감지:
+  claude-* → anthropic  (URL: anthropic_base_url/v1/messages, 헤더: x-api-key)
+  gpt-*/o* → openai     (URL: openai_base_url/chat/completions, 헤더: Authorization Bearer)
+  gemini-* → gemini     (URL: gemini_base_url/models/{model}:generateContent, 헤더: x-goog-api-key)
+
+스트리밍(SSE)은 call_main_stream()의 Anthropic 포맷만 지원합니다.
 """
 
 import json
+import logging
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
@@ -23,8 +28,8 @@ import httpx
 
 from app.config import get_settings
 
-_ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -36,39 +41,162 @@ class LLMUsage:
     completion_tokens: int
 
 
-def _headers(api_key: str) -> dict:
+# ---------------------------------------------------------------------------
+# 내부 헬퍼
+# ---------------------------------------------------------------------------
+
+def _detect_provider(model: str) -> str:
+    """모델명 prefix로 GMS provider를 자동 감지합니다."""
+    if model.startswith("claude"):
+        return "anthropic"
+    if model.startswith("gpt") or model.startswith("o"):
+        return "openai"
+    if model.startswith("gemini"):
+        return "gemini"
+    raise ValueError(f"Unknown model prefix: {model!r}")
+
+
+def _build_url(provider: str, model: str, settings) -> str:
+    if provider == "anthropic":
+        return f"{settings.anthropic_base_url}/v1/messages"
+    if provider == "openai":
+        return f"{settings.openai_base_url}/chat/completions"
+    # gemini
+    return f"{settings.gemini_base_url}/models/{model}:generateContent"
+
+
+def _build_headers(provider: str, settings) -> dict:
+    if provider == "anthropic":
+        return {
+            "x-api-key": settings.gms_api_key,
+            "anthropic-version": _ANTHROPIC_VERSION,
+            "content-type": "application/json",
+        }
+    if provider == "openai":
+        return {
+            "Authorization": f"Bearer {settings.gms_api_key}",
+            "content-type": "application/json",
+        }
+    # gemini
     return {
-        "x-api-key": api_key,
-        "anthropic-version": _ANTHROPIC_VERSION,
+        "x-goog-api-key": settings.gms_api_key,
         "content-type": "application/json",
     }
 
+
+def _build_body(
+    provider: str,
+    model: str,
+    messages: list[dict],
+    system: str = "",
+    max_tokens: int = 4096,
+    stream: bool = False,
+    json_output: bool = False,
+) -> dict:
+    """Provider별 요청 바디를 구성합니다.
+
+    messages는 OpenAI 형식(role: user/assistant, content: str)으로 전달하며,
+    각 provider 포맷으로 변환됩니다.
+
+    system 처리 방식:
+      anthropic — "system" 최상위 필드
+      openai    — {"role": "developer", "content": system} messages 맨 앞 삽입
+      gemini    — user/model 선행 턴으로 contents 앞에 삽입
+    """
+    if provider == "anthropic":
+        body: dict = {"model": model, "max_tokens": max_tokens, "messages": messages}
+        if system:
+            body["system"] = system
+        if stream:
+            body["stream"] = True
+        return body
+
+    if provider == "openai":
+        oai_messages: list[dict] = []
+        if system:
+            oai_messages.append({"role": "developer", "content": system})
+        oai_messages.extend(messages)
+        body = {"model": model, "messages": oai_messages}
+        if json_output:
+            body["response_format"] = {"type": "json_object"}
+        return body
+
+    # gemini
+    contents: list[dict] = []
+    if system:
+        contents.append({"role": "user", "parts": [{"text": system}]})
+        contents.append({"role": "model", "parts": [{"text": "알겠습니다."}]})
+    for msg in messages:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+    gen_config: dict = {"maxOutputTokens": max_tokens}
+    if json_output:
+        gen_config["responseMimeType"] = "application/json"
+    return {"contents": contents, "generationConfig": gen_config}
+
+
+def _parse_response(provider: str, data: dict) -> tuple[str, dict]:
+    """응답 JSON에서 텍스트와 토큰 사용량을 추출합니다.
+
+    Returns:
+        (text, {"input_tokens": int, "output_tokens": int})
+        usage 키는 provider에 관계없이 통일된 형식으로 반환됩니다.
+    """
+    if provider == "anthropic":
+        return (
+            data["content"][0]["text"],
+            {
+                "input_tokens": data["usage"]["input_tokens"],
+                "output_tokens": data["usage"]["output_tokens"],
+            },
+        )
+    if provider == "openai":
+        return (
+            data["choices"][0]["message"]["content"],
+            {
+                "input_tokens": data["usage"]["prompt_tokens"],
+                "output_tokens": data["usage"]["completion_tokens"],
+            },
+        )
+    # gemini
+    return (
+        data["candidates"][0]["content"]["parts"][0]["text"],
+        {
+            "input_tokens": data["usageMetadata"]["promptTokenCount"],
+            "output_tokens": data["usageMetadata"]["candidatesTokenCount"],
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 async def call_main(
     messages: list[dict],
     system_prompt: str,
     max_tokens: int = 4096,
 ) -> tuple[str, LLMUsage]:
-    """MAIN_MODEL으로 단일 응답을 생성합니다."""
+    """MAIN_MODEL(claude-*)로 단일 응답을 생성합니다."""
     settings = get_settings()
-    body = {
-        "model": settings.main_model,
-        "max_tokens": max_tokens,
-        "system": system_prompt,
-        "messages": messages,
-    }
+    provider = _detect_provider(settings.main_model)
+    body = _build_body(provider, settings.main_model, messages, system_prompt, max_tokens)
+
     async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(_ANTHROPIC_API_URL, headers=_headers(settings.anthropic_api_key), json=body)
+        resp = await client.post(
+            _build_url(provider, settings.main_model, settings),
+            headers=_build_headers(provider, settings),
+            json=body,
+        )
         resp.raise_for_status()
         data = resp.json()
 
-    text = data["content"][0]["text"]
-    usage = LLMUsage(
+    text, usage_raw = _parse_response(provider, data)
+    return text, LLMUsage(
         model=settings.main_model,
-        prompt_tokens=data["usage"]["input_tokens"],
-        completion_tokens=data["usage"]["output_tokens"],
+        prompt_tokens=usage_raw["input_tokens"],
+        completion_tokens=usage_raw["output_tokens"],
     )
-    return text, usage
 
 
 async def call_main_stream(
@@ -76,25 +204,18 @@ async def call_main_stream(
     system_prompt: str,
     max_tokens: int = 4096,
 ) -> AsyncGenerator[tuple[str | None, LLMUsage | None], None]:
-    """MAIN_MODEL 스트리밍 응답. (text_chunk, None) 반복 후 (None, LLMUsage) 1회 종료."""
+    """MAIN_MODEL Anthropic SSE 스트리밍. (text_chunk, None) 반복 후 (None, LLMUsage) 1회 종료."""
     settings = get_settings()
-    body = {
-        "model": settings.main_model,
-        "max_tokens": max_tokens,
-        "system": system_prompt,
-        "messages": messages,
-        "stream": True,
-    }
+    provider = _detect_provider(settings.main_model)
+    url = _build_url(provider, settings.main_model, settings)
+    headers = _build_headers(provider, settings)
+    body = _build_body(provider, settings.main_model, messages, system_prompt, max_tokens, stream=True)
+
     input_tokens = 0
     output_tokens = 0
 
     async with httpx.AsyncClient(timeout=120.0) as client:
-        async with client.stream(
-            "POST",
-            _ANTHROPIC_API_URL,
-            headers=_headers(settings.anthropic_api_key),
-            json=body,
-        ) as response:
+        async with client.stream("POST", url, headers=headers, json=body) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
                 if not line.startswith("data:"):
@@ -129,28 +250,26 @@ async def call_rewrite(
     system_prompt: str = "",
     max_tokens: int = 512,
 ) -> tuple[str, LLMUsage]:
-    """REWRITE_MODEL으로 경량 추론을 수행합니다. query_rewriter.py에서 호출됩니다."""
+    """REWRITE_MODEL(gpt-*)로 멀티턴 쿼리를 재구성합니다. query_rewriter.py에서 호출됩니다."""
     settings = get_settings()
-    body: dict = {
-        "model": settings.rewrite_model,
-        "max_tokens": max_tokens,
-        "messages": messages,
-    }
-    if system_prompt:
-        body["system"] = system_prompt
+    provider = _detect_provider(settings.rewrite_model)
+    body = _build_body(provider, settings.rewrite_model, messages, system_prompt, max_tokens)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(_ANTHROPIC_API_URL, headers=_headers(settings.anthropic_api_key), json=body)
+        resp = await client.post(
+            _build_url(provider, settings.rewrite_model, settings),
+            headers=_build_headers(provider, settings),
+            json=body,
+        )
         resp.raise_for_status()
         data = resp.json()
 
-    text = data["content"][0]["text"]
-    usage = LLMUsage(
+    text, usage_raw = _parse_response(provider, data)
+    return text, LLMUsage(
         model=settings.rewrite_model,
-        prompt_tokens=data["usage"]["input_tokens"],
-        completion_tokens=data["usage"]["output_tokens"],
+        prompt_tokens=usage_raw["input_tokens"],
+        completion_tokens=usage_raw["output_tokens"],
     )
-    return text, usage
 
 
 _GROUNDING_SYSTEM_PROMPT = """\
@@ -162,7 +281,7 @@ _GROUNDING_SYSTEM_PROMPT = """\
 
 
 async def call_grounding(prompt: str) -> tuple[dict, LLMUsage]:
-    """GROUNDING_MODEL로 그라운딩 이진 판정을 수행하고 파싱된 dict를 반환합니다.
+    """GROUNDING_MODEL(gemini-*)로 그라운딩 이진 판정을 수행하고 파싱된 dict를 반환합니다.
 
     Args:
         prompt: "질문: ...\n\n검색된 컨텍스트:\n..." 형식의 판정 입력.
@@ -171,26 +290,33 @@ async def call_grounding(prompt: str) -> tuple[dict, LLMUsage]:
         ({"is_groundable": bool, "confidence": float}, LLMUsage).
         파싱 실패 시 ({"is_groundable": False, "confidence": 0.0}, usage) 반환.
     """
-    import logging
-    logger = logging.getLogger(__name__)
-
     settings = get_settings()
-    body = {
-        "model": settings.grounding_model,
-        "max_tokens": 64,
-        "system": _GROUNDING_SYSTEM_PROMPT,
-        "messages": [{"role": "user", "content": prompt}],
-    }
+    provider = _detect_provider(settings.grounding_model)
+    messages = [{"role": "user", "content": prompt}]
+    body = _build_body(
+        provider,
+        settings.grounding_model,
+        messages,
+        _GROUNDING_SYSTEM_PROMPT,
+        max_tokens=64,
+        json_output=True,
+    )
+
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(_ANTHROPIC_API_URL, headers=_headers(settings.anthropic_api_key), json=body)
+        resp = await client.post(
+            _build_url(provider, settings.grounding_model, settings),
+            headers=_build_headers(provider, settings),
+            json=body,
+        )
         resp.raise_for_status()
         data = resp.json()
 
-    text = data["content"][0]["text"].strip()
+    text, usage_raw = _parse_response(provider, data)
+    text = text.strip()
     usage = LLMUsage(
         model=settings.grounding_model,
-        prompt_tokens=data["usage"]["input_tokens"],
-        completion_tokens=data["usage"]["output_tokens"],
+        prompt_tokens=usage_raw["input_tokens"],
+        completion_tokens=usage_raw["output_tokens"],
     )
 
     if text.startswith("```"):
@@ -209,7 +335,7 @@ async def call_structured(
     system_prompt: str,
     max_tokens: int = 1024,
 ) -> dict:
-    """MAIN_MODEL으로 JSON 구조화 응답을 생성합니다.
+    """MAIN_MODEL로 JSON 구조화 응답을 생성합니다.
 
     system_prompt에서 반드시 JSON 형식 응답을 명시해야 합니다.
     마크다운 코드 블록(```json...```)이 포함된 경우 자동으로 제거합니다.

@@ -2,7 +2,7 @@
 임베딩 생성 및 모델 버전 관리.
 
 Google Gemini Embedding API (GMS 프록시 경유)의 batchEmbedContents 엔드포인트를
-사용합니다. 엔드포인트 URL은 config의 embedding_api_base_url + embedding_model로
+사용합니다. 엔드포인트 URL은 config의 gemini_base_url + /models/ + embedding_model로
 동적으로 구성됩니다.
 
 content(원문)는 불변이며, 모델 교체 시 이 모듈만 재호출하면 됩니다
@@ -41,10 +41,10 @@ async def embed_texts(texts: list[str]) -> EmbedResult:
         raise ValueError("embed_texts: texts must not be empty")
 
     settings = get_settings()
-    url = f"{settings.embedding_api_base_url}/{settings.embedding_model}:batchEmbedContents"
+    url = f"{settings.gemini_base_url}/models/{settings.embedding_model}:batchEmbedContents"
     headers = {
         "Content-Type": "application/json",
-        "x-goog-api-key": settings.embedding_api_key,
+        "x-goog-api-key": settings.gms_api_key,
     }
     model_path = f"models/{settings.embedding_model}"
 
