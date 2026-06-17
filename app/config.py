@@ -30,27 +30,29 @@ class Settings(BaseSettings):
     vector_store_provider: str = "chroma"
     vector_store_path: str = "./data/vector_store"
 
-    # Embeddings (현재: Gemini Embedding via GMS 프록시)
-    # embedding_api_base_url + embedding_model 조합으로 엔드포인트 URL을 구성합니다.
-    embedding_api_base_url: str = "https://gms.ssafy.io/gmsapi/generativelanguage.googleapis.com/v1beta/models"
+    # GMS 통합 API Key (Claude / GPT / Gemini 공통)
+    gms_api_key: str = ""
+
+    # GMS Provider Base URLs
+    # provider.py가 모델명 prefix로 provider를 자동 감지하여 해당 URL을 사용합니다.
+    anthropic_base_url: str = "https://gms.ssafy.io/gmsapi/api.anthropic.com"
+    openai_base_url: str = "https://gms.ssafy.io/gmsapi/api.openai.com/v1"
+    gemini_base_url: str = "https://gms.ssafy.io/gmsapi/generativelanguage.googleapis.com/v1beta"
+
+    # Embeddings (Gemini Embedding via GMS, gemini_base_url + /models 로 URL 구성)
     embedding_model: str = "gemini-embedding-2"
     embedding_model_version: str = "v1"
-    embedding_api_key: str = ""  # GMS_KEY
 
     # LLM provider (core/llm/provider.py 추상 인터페이스 뒤에서 사용)
-    anthropic_api_key: str = ""
     main_model: str = "claude-sonnet-4-6"
-    rewrite_model: str = "claude-haiku-4-5-20251001"   # 멀티턴 쿼리 재구성
-    grounding_model: str = "gemini-3.5-flash-lite"     # 그라운딩 이진 판정 전용
+    rewrite_model: str = "claude-haiku-4-5-20251001"             # 멀티턴 쿼리 재구성 (OpenAI)
+    grounding_model: str = "gemini-3.5-flash-lite"  # 그라운딩 이진 판정 전용 (Gemini)
 
     # provider.py 컨텍스트 길이 가드
     max_context_tokens: int = 30000
 
     # 그라운딩 유사도 1차 필터 임계치
-    # 0.4 근거: 코사인 유사도 0.3은 노이즈 수준의 매칭이 많이 포함되는 반면,
-    # 0.4 이상부터 의미 있는 의미 유사성이 성립하는 것으로 실험적으로 알려져 있습니다.
-    # 실제 서비스 데이터로 정밀 조정이 필요합니다.
-    grounding_similarity_threshold: float = 0.4
+    grounding_similarity_threshold: float = 0.35
 
     # Spring backend(backend 레포) 연동
     spring_backend_base_url: str = "http://localhost:8080"
