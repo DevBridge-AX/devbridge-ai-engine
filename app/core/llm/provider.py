@@ -159,13 +159,18 @@ def _parse_response(provider: str, data: dict) -> tuple[str, dict]:
             },
         )
     # gemini
-    return (
-        data["candidates"][0]["content"]["parts"][0]["text"],
-        {
-            "input_tokens": data["usageMetadata"]["promptTokenCount"],
-            "output_tokens": data["usageMetadata"]["candidatesTokenCount"],
-        },
-    )
+    candidates = data.get("candidates", [])
+    text = ""
+    if candidates and "content" in candidates[0]:
+        parts = candidates[0]["content"].get("parts", [])
+        if parts:
+            text = parts[0].get("text", "")
+
+    usage_metadata = data.get("usageMetadata", {})
+    return text, {
+        "input_tokens": usage_metadata.get("promptTokenCount", 0),
+        "output_tokens": usage_metadata.get("candidatesTokenCount", 0),
+    }
 
 
 # ---------------------------------------------------------------------------
