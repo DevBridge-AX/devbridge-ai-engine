@@ -85,6 +85,6 @@ class ChatDoneEvent(BaseModel):
     citations: list[Citation]
     is_groundable: bool
     confidence: float
-    suggested_owner_id: Optional[int] = None
+    suggested_owner_id: Optional[str] = None  # GIT_COMMITS.author_id (USERS.id UUID String)
     prompt_version: str
     token_usage: TokenUsage

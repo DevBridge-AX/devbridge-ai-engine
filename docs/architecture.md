@@ -264,7 +264,47 @@ is_groundable / confidence (LLM structured output, 최종 판단)
   `/usage/summary?workspace_id=`를 통해 Spring에 집계값을 제공하며, 이 레포는
   단가를 알지 못하고 토큰 수치만 반환합니다.
 
-## 5. 1차 구현 범위
+## 5. DB 마이그레이션 (Alembic)
+
+AI 도메인 스키마(`devbridge_ai`)는 Alembic으로 관리합니다.
+
+### 초기 설정
+
+```bash
+# devbridge_ai 스키마 및 ai_engine_user 계정은 별도 MySQL 초기화 스크립트로 생성해야 합니다.
+# CREATE DATABASE devbridge_ai;
+# CREATE USER 'ai_engine_user'@'%' IDENTIFIED BY '...';
+# GRANT ALL PRIVILEGES ON devbridge_ai.* TO 'ai_engine_user'@'%';
+```
+
+### 주요 명령어
+
+```bash
+# 마이그레이션 적용 (최신 리비전으로)
+alembic upgrade head
+
+# 현재 리비전 확인
+alembic current
+
+# 새 리비전 생성 (models.py 변경 후)
+alembic revision --autogenerate -m "describe_change"
+
+# 한 단계 롤백
+alembic downgrade -1
+```
+
+### DB URL 주입 방식
+
+`alembic/env.py`가 `app/config.py`의 `DATABASE_URL`을 읽어 동적으로 주입합니다.
+`alembic.ini`의 `sqlalchemy.url`은 비워두며, `.env` 파일 값이 우선합니다.
+
+### autogenerate 범위
+
+`Base.metadata`(`app/db/models.py`)에 정의된 AI 도메인 테이블만 autogenerate 대상입니다.
+Spring 소유 테이블(`USERS`, `WORKSPACES`, `CHAT_MESSAGES` 등)은 이 레포의 models.py에
+정의되지 않으므로 리비전에 절대 포함되지 않습니다.
+
+## 6. 1차 구현 범위
 
 **포함**
 

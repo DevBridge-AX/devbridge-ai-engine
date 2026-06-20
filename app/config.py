@@ -30,18 +30,29 @@ class Settings(BaseSettings):
     vector_store_provider: str = "chroma"
     vector_store_path: str = "./data/vector_store"
 
-    # Embeddings
-    embedding_model: str = "text-embedding-3-large"
+    # GMS 통합 API Key (Claude / GPT / Gemini 공통)
+    gms_api_key: str = ""
+
+    # GMS Provider Base URLs
+    # provider.py가 모델명 prefix로 provider를 자동 감지하여 해당 URL을 사용합니다.
+    anthropic_base_url: str = "https://gms.ssafy.io/gmsapi/api.anthropic.com"
+    openai_base_url: str = "https://gms.ssafy.io/gmsapi/api.openai.com/v1"
+    gemini_base_url: str = "https://gms.ssafy.io/gmsapi/generativelanguage.googleapis.com/v1beta"
+
+    # Embeddings (Gemini Embedding via GMS, gemini_base_url + /models 로 URL 구성)
+    embedding_model: str = "gemini-embedding-2"
     embedding_model_version: str = "v1"
-    embedding_api_key: str = ""
 
     # LLM provider (core/llm/provider.py 추상 인터페이스 뒤에서 사용)
-    anthropic_api_key: str = ""
     main_model: str = "claude-sonnet-4-6"
-    rewrite_model: str = "claude-haiku-4-5-20251001"
+    rewrite_model: str = "claude-haiku-4-5-20251001"             # 멀티턴 쿼리 재구성 (OpenAI)
+    grounding_model: str = "gemini-3.5-flash-lite"  # 그라운딩 이진 판정 전용 (Gemini)
 
     # provider.py 컨텍스트 길이 가드
     max_context_tokens: int = 30000
+
+    # 그라운딩 유사도 1차 필터 임계치
+    grounding_similarity_threshold: float = 0.35
 
     # Spring backend(backend 레포) 연동
     spring_backend_base_url: str = "http://localhost:8080"
