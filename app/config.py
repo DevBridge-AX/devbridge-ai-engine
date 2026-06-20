@@ -31,35 +31,41 @@ class Settings(BaseSettings):
     vector_store_provider: str = "chroma"
     vector_store_path: str = "./data/vector_store"
 
-    # Embeddings
-    # Day 2에서는 아직 강하게 사용하지 않음.
-    # Day 3 이후 RAG 검색/문서 검색에서 사용 예정.
-    embedding_model: str = "text-embedding-3-large"
-    embedding_model_version: str = "v1"
-    embedding_api_key: str = ""
+    # GMS 통합 API Key
+    # Claude / GPT / Gemini 호출에 공통으로 사용
+    gms_api_key: str = ""
 
-    # Existing LLM provider settings
-    # 기존 프로젝트 구조 보존용
-    anthropic_api_key: str = ""
+    # GMS Provider Base URLs
+    # provider.py가 모델명 prefix로 provider를 자동 감지하여 해당 URL을 사용합니다.
+    anthropic_base_url: str = "https://gms.ssafy.io/gmsapi/api.anthropic.com"
+    openai_base_url: str = "https://gms.ssafy.io/gmsapi/api.openai.com/v1"
+    gemini_base_url: str = "https://gms.ssafy.io/gmsapi/generativelanguage.googleapis.com/v1beta"
+
+    # Embeddings
+    # Gemini Embedding via GMS
+    embedding_model: str = "gemini-embedding-2"
+    embedding_model_version: str = "v1"
+
+    # LLM provider
     main_model: str = "claude-sonnet-4-6"
-    rewrite_model: str = "claude-haiku-4-5-20251001"
+    rewrite_model: str = "gpt-5.4-nano"
+    grounding_model: str = "gemini-3.5-flash-lite"
 
     # Day 2 document analysis mode
     # fallback: 실제 모델 API 호출 없이 규칙 기반 분석
-    # openai: 실제 모델 API 호출
+    # llm: provider.py의 GMS LLM 호출 구조 사용
     ai_analysis_mode: str = "fallback"
 
     # Day 2 document analysis model
-    # fallback 모드에서는 표시용 모델명으로만 사용
-    # openai 모드에서는 실제 호출 모델명으로 사용
+    # fallback 모드에서는 표시용 모델명으로 사용
+    # llm 모드에서는 실제 호출 모델명으로 사용
     document_analysis_model: str = "fallback-v1"
-
-    # 실제 모델 API 사용 시 필요한 값
-    openai_api_key: str = ""
-    openai_base_url: str = "https://api.openai.com/v1"
 
     # provider.py 컨텍스트 길이 가드
     max_context_tokens: int = 30000
+
+    # 그라운딩 유사도 1차 필터 임계치
+    grounding_similarity_threshold: float = 0.35
 
     # Spring backend 연동
     spring_backend_base_url: str = "http://localhost:8080"

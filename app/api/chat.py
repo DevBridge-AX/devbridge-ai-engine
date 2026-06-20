@@ -1,33 +1,47 @@
 """
 멀티턴 RAG 챗봇 SSE 스트리밍 엔드포인트.
 
-Spring 백엔드가 매 요청마다 대화 히스토리, workspace_id, user_id, role을 포함한
-stateless payload를 전달하면, StreamingResponse(SSE)로 토큰 단위 답변을 스트리밍하고
-최종적으로 {answer_stream, citations[], similarity_scores[], is_groundable, confidence,
-suggested_owner_id, token_usage}를 구성해 반환합니다.
+POST /chat 는 StreamingResponse(text/event-stream)로 두 종류의 이벤트를 반환합니다.
+  event: token  — 답변 텍스트 청크 (반복)
+  event: done   — 메타데이터 (스트림 종료 시 1회)
+  event: error  — 파이프라인 예외 발생 시
 
-처리 흐름 (구현 예정):
-1. turn 1: query_rewriter를 거치지 않고 사용자 쿼리로 바로 검색
-   turn 2+: core.llm.query_rewriter로 쿼리 재구성 후 검색
-2. core.rag.retriever로 document_chunks 벡터 검색 (유사도 점수 포함)
-3. core.llm.persona_prompts로 role(직무)별 시스템 프롬프트 구성
-   (동적 변수: retrieved_context, conversation_history, user_preference_summary)
-4. core.llm.provider로 LLM 호출, 토큰 스트리밍
-5. core.rag.grounding으로 유사도 점수 + LLM structured output(is_groundable/confidence) 결합 판정
-6. 응답 payload 조립 (citations, similarity_scores, suggested_owner_id, token_usage 등)
-   - 임계치 비교/알림 트리거(UC-04)는 Spring 책임 — 이 엔드포인트는 값만 반환
-
-TODO:
-- POST /chat 엔드포인트 (StreamingResponse) 구현
-- 요청 스키마: app.schemas.chat.ChatRequest 참조
-- user_preference_summary는 (user_id, workspace_id) 복합키로 격리 조회
+X-Internal-Api-Key 헤더 검증이 모든 요청에 적용됩니다.
 """
 
-from fastapi import APIRouter
+import json
+import logging
+
+from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
+
+from app.core import chat_pipeline
+from app.core.security import verify_internal_api_key
+from app.db.session import get_db
+from app.schemas.chat import ChatRequest
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# TODO: SSE 스트리밍 챗 엔드포인트 구현
-# @router.post("/")
-# async def chat_stream(request: ChatRequest) -> StreamingResponse:
-#     ...
+
+@router.post("/")
+async def chat_stream(
+    request: ChatRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_internal_api_key),
+) -> StreamingResponse:
+    """RAG 기반 멀티턴 챗봇 SSE 스트리밍 엔드포인트."""
+
+    async def generate():
+        try:
+            async for event in chat_pipeline.run(request, db):
+                payload = json.dumps(event.data, ensure_ascii=False)
+                yield f"event: {event.event}\ndata: {payload}\n\n"
+        except Exception as exc:
+            logger.exception("chat_pipeline 처리 중 오류 발생")
+            error_payload = json.dumps({"message": str(exc)}, ensure_ascii=False)
+            yield f"event: error\ndata: {error_payload}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
