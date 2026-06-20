@@ -58,6 +58,7 @@ async def embed_texts(texts: list[str]) -> EmbedResult:
                 for t in batch
             ]
         }
+
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(url, headers=headers, json=body)
             resp.raise_for_status()
