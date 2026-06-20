@@ -16,7 +16,7 @@ import httpx
 
 from app.config import get_settings
 
-_API_URL = # "https://api.openai.com/embeddings" # TODO: 설정에서 불러오기
+_API_URL = "https://api.openai.com/v1/embeddings"  # TODO: 설정에서 불러오기
 _BATCH_SIZE = 100  # [설정] OpenAI 최대 2048이지만 안전 마진을 두어 100으로 제한
 
 

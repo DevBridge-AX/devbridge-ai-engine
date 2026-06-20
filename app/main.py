@@ -1,19 +1,13 @@
 """
 FastAPI 애플리케이션 엔트리포인트.
 
-- RAG 기반 질의응답(/chat)과 문서/Git 인덱싱(/ingestion) 라우터를 등록합니다.
-- 이 서비스는 stateless 추론 엔진으로, 대화 히스토리/workspace_id/user_id/role 등의
-  상태는 매 요청마다 Spring 백엔드(backend 레포)가 payload로 전달합니다.
-
-TODO:
-- chat, ingestion 라우터 구현 완료 후 include_router 활성화
-- 전역 예외 핸들러 / 로깅 미들웨어 추가
-- CORS 설정 (Spring 백엔드 도메인만 허용)
+- RAG 기반 질의응답과 문서/Git 인덱싱 라우터를 등록합니다.
+- Day 2에서는 Spring Backend에서 호출할 문서 분석 API를 추가합니다.
 """
 
 from fastapi import FastAPI
 
-from app.api import ingestion
+from app.api import analysis, ingestion
 from app.config import get_settings
 
 settings = get_settings()
@@ -25,6 +19,7 @@ app = FastAPI(
 )
 
 app.include_router(ingestion.router, prefix="/api/ingestion", tags=["ingestion"])
+app.include_router(analysis.router, prefix="/api/analysis", tags=["analysis"])
 
 # TODO: chat 라우터 구현 후 활성화
 # from app.api import chat
