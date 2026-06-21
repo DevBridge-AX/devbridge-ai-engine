@@ -15,6 +15,7 @@ class DocumentIngestionRequest(BaseModel):
     """POST /ingestion/document 요청 스키마."""
 
     workspace_id: str
+    source_id: str | None = None
     data_source_id: str | None = None
     backend_document_id: str | None = None
     task_id: str | None = None
@@ -38,5 +39,6 @@ class GitIngestionRequest(BaseModel):
     """POST /ingestion/git 요청 스키마."""
 
     workspace_id: str
+    source_id: str | None = None
     data_source_id: str | None = None
     commits: list[CommitData]

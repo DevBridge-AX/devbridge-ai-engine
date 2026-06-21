@@ -37,7 +37,7 @@ class RetrievedChunk:
 
 async def retrieve(
     query: str,
-    workspace_id: int,
+    workspace_id: str,
     db: Session,
     top_k: int = 5,
 ) -> list[RetrievedChunk]:
@@ -96,7 +96,7 @@ def _resolve_title_and_author(
             select(GitCommit).where(GitCommit.id == chunk.source_id)
         ).scalar_one_or_none()
         if row:
-            title = row.message.split("\n")[0][:72]
+            title = row.commit_message.split("\n")[0][:72]
             return title, row.author_id
         return f"Commit #{chunk.source_id}", None
 

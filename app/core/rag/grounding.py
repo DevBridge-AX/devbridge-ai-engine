@@ -14,12 +14,15 @@
 - 2차 판정 토큰(llm_usage)은 chat_pipeline에서 rewrite usage에 합산됩니다.
 """
 
+import logging
 from dataclasses import dataclass, field
 
 from app.config import get_settings
 from app.core.llm import provider as llm
 from app.core.llm.provider import LLMUsage
 from app.core.rag.retriever import RetrievedChunk
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -52,10 +55,30 @@ async def assess(
     context = _format_context(retrieved_chunks)
     prompt = f"질문: {user_query}\n\n검색된 컨텍스트:\n{context}"
 
-    raw, usage = await llm.call_grounding(prompt)
+    try:
+        raw, usage = await llm.call_grounding(prompt)
+    except Exception:
+        logger.warning("grounding 2차 판정 호출 실패, 유사도 fallback 적용 (best_score=%.3f)", best_score)
+        return GroundingResult(
+            is_groundable=True,
+            confidence=best_score,
+            suggested_owner_id=None,
+        )
 
-    is_groundable = bool(raw.get("is_groundable", False))
-    confidence = float(raw.get("confidence", 0.0))
+    is_groundable = raw.get("is_groundable")
+    confidence = raw.get("confidence")
+
+    if is_groundable is None or confidence is None:
+        logger.warning("grounding 2차 판정 파싱 실패, 유사도 fallback 적용 (best_score=%.3f, raw=%r)", best_score, raw)
+        return GroundingResult(
+            is_groundable=True,
+            confidence=best_score,
+            suggested_owner_id=None,
+            llm_usage=usage,
+        )
+
+    is_groundable = bool(is_groundable)
+    confidence = float(confidence)
     suggested_owner_id = None if is_groundable else _find_suggested_owner(retrieved_chunks)
 
     return GroundingResult(

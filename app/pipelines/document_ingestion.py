@@ -2,9 +2,9 @@
 업로드 문서 청킹/임베딩/인덱싱 파이프라인.
 
 흐름: 파일 로드 → chunker → embedder → document_chunks(MySQL) 저장
-      + vector_store.add() → KNOWLEDGE_DOCUMENTS.status 갱신 → usage_logs 누적
+      + vector_store.add() → KNOWLEDGE_DOCUMENTS.analysis_status 갱신 → usage_logs 누적
 
-백그라운드 태스크로 동작합니다. 완료/실패 여부는 KNOWLEDGE_DOCUMENTS.status로 추적합니다.
+백그라운드 태스크로 동작합니다. 완료/실패 여부는 KNOWLEDGE_DOCUMENTS.analysis_status로 추적합니다.
 
 확인 필요:
 - file_path는 FastAPI와 Spring이 공유하는 파일시스템(예: Docker 볼륨)에 위치해야
@@ -21,7 +21,7 @@ import logging
 import uuid
 from pathlib import Path
 
-from sqlalchemy import select, update
+from sqlalchemy import update
 
 from app.core.embeddings.embedder import embed_texts
 from app.core.rag.chunker import chunk_document
@@ -33,45 +33,45 @@ logger = logging.getLogger(__name__)
 
 
 async def ingest_document(
-    workspace_id: int,
-    knowledge_document_id: int,
+    workspace_id: str,
+    knowledge_document_id: str,
     file_path: str,
     doc_type: str,
 ) -> None:
-    """문서 인덱싱 백그라운드 태스크. 완료 후 status를 indexed/failed로 갱신합니다."""
+    """문서 인덱싱 백그라운드 태스크. 완료 후 analysis_status를 indexed/failed로 갱신합니다."""
     with SessionLocal() as db:
         try:
             await _run(db, workspace_id, knowledge_document_id, file_path, doc_type)
             db.execute(
                 update(KnowledgeDocument)
                 .where(KnowledgeDocument.id == knowledge_document_id)
-                .values(status="indexed")
+                .values(analysis_status="COMPLETED")
             )
             db.commit()
         except Exception:
             logger.exception(
-                "document_ingestion failed: knowledge_document_id=%d", knowledge_document_id
+                "document_ingestion failed: knowledge_document_id=%s", knowledge_document_id
             )
             db.rollback()
             db.execute(
                 update(KnowledgeDocument)
                 .where(KnowledgeDocument.id == knowledge_document_id)
-                .values(status="failed")
+                .values(analysis_status="FAILED")
             )
             db.commit()
 
 
 async def _run(
     db,
-    workspace_id: int,
-    knowledge_document_id: int,
+    workspace_id: str,
+    knowledge_document_id: str,
     file_path: str,
     doc_type: str,
 ) -> None:
     text = Path(file_path).read_text(encoding="utf-8", errors="replace")
     chunks = chunk_document(text, doc_type)
     if not chunks:
-        logger.warning("document_ingestion: no chunks produced for id=%d", knowledge_document_id)
+        logger.warning("document_ingestion: no chunks produced for id=%s", knowledge_document_id)
         return
 
     result = await embed_texts([c.content for c in chunks])

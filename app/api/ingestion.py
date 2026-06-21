@@ -5,9 +5,12 @@
 이 엔드포인트를 호출합니다. FastAPI는 202를 즉시 반환하고 BackgroundTasks로
 파이프라인을 실행합니다.
 
-POST /ingestion/document — KNOWLEDGE_DOCUMENTS 레코드 생성(status=pending) 후 인덱싱 트리거
+POST /ingestion/document — KNOWLEDGE_DOCUMENTS 레코드 생성(analysis_status=PENDING) 후 인덱싱 트리거
 POST /ingestion/git      — Git 커밋 인덱싱 트리거
 """
+
+import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy.orm import Session
@@ -29,14 +32,18 @@ async def ingest_document_endpoint(
     db: Session = Depends(get_db),
     _: None = Depends(verify_internal_api_key),
 ) -> dict:
-    """문서 인덱싱을 예약합니다. 완료 여부는 KNOWLEDGE_DOCUMENTS.status로 확인합니다."""
+    """문서 인덱싱을 예약합니다. 완료 여부는 KNOWLEDGE_DOCUMENTS.analysis_status로 확인합니다."""
+    now = datetime.now(timezone.utc)
     doc = KnowledgeDocument(
+        id=str(uuid.uuid4()),
         workspace_id=request.workspace_id,
-        data_source_id=request.data_source_id,
+        source_id=request.source_id,
         title=request.title,
-        doc_type=request.doc_type,
-        source_path=request.file_path,
-        status="pending",
+        document_type=request.doc_type,
+        file_path=request.file_path,
+        analysis_status="PENDING",
+        created_at=now,
+        updated_at=now,
     )
     db.add(doc)
     db.commit()
@@ -49,7 +56,7 @@ async def ingest_document_endpoint(
         file_path=request.file_path,
         doc_type=request.doc_type,
     )
-    return {"knowledge_document_id": doc.id, "status": "pending"}
+    return {"knowledge_document_id": doc.id, "status": "PENDING"}
 
 
 @router.post("/git", status_code=status.HTTP_202_ACCEPTED)
@@ -62,7 +69,7 @@ async def ingest_git_endpoint(
     background_tasks.add_task(
         ingest_git_commits,
         workspace_id=request.workspace_id,
-        data_source_id=request.data_source_id,
+        source_id=request.source_id,
         commits=request.commits,
     )
     return {"status": "accepted", "commit_count": len(request.commits)}

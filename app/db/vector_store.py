@@ -21,7 +21,7 @@ class VectorStore:
     def __init__(self, path: str) -> None:
         self._client = chromadb.PersistentClient(path=path)
 
-    def _collection(self, workspace_id: int):
+    def _collection(self, workspace_id: str):
         return self._client.get_or_create_collection(
             name=f"workspace_{workspace_id}",
             metadata={"hnsw:space": "cosine"},
@@ -33,7 +33,7 @@ class VectorStore:
         chunk_id: int,
         embedding: list[float],
         metadata: dict,
-        workspace_id: int,
+        workspace_id: str,
     ) -> None:
         """청크 임베딩을 벡터스토어에 추가합니다. vector_id가 이미 존재하면 덮어씁니다."""
         self._collection(workspace_id).upsert(
@@ -45,7 +45,7 @@ class VectorStore:
     def search(
         self,
         query_embedding: list[float],
-        workspace_id: int,
+        workspace_id: str,
         top_k: int = 5,
     ) -> list[dict]:
         """워크스페이스 범위 내에서 유사 청크를 검색합니다.
@@ -67,7 +67,7 @@ class VectorStore:
             for dist, meta in zip(results["distances"][0], results["metadatas"][0])
         ]
 
-    def delete(self, vector_id: str, workspace_id: int) -> None:
+    def delete(self, vector_id: str, workspace_id: str) -> None:
         """청크 임베딩을 벡터스토어에서 삭제합니다."""
         self._collection(workspace_id).delete(ids=[vector_id])
 
