@@ -34,7 +34,7 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def log_embedding_usage(
-    db: Session, workspace_id: int, embedding_model: str, tokens: float
+    db: Session, workspace_id: str, embedding_model: str, tokens: float
 ) -> None:
     """임베딩 토큰 사용량을 usage_logs에 일 단위로 누적합니다.
 

@@ -32,11 +32,11 @@ class ConversationMessage(BaseModel):
 class ChatRequest(BaseModel):
     """Spring -> FastAPI /chat 요청 스키마 (stateless payload)."""
 
-    session_id: int
+    session_id: str
     content: str
     conversation_history: list[ConversationMessage]
-    workspace_id: int
-    user_id: int
+    workspace_id: str
+    user_id: str
     role: PersonaRole
 
 
@@ -50,7 +50,7 @@ class Citation(BaseModel):
     """
 
     source_type: Literal["document", "git_commit", "db_schema"]
-    source_id: int
+    source_id: str
     chunk_id: int
     title: str
     similarity_score: float

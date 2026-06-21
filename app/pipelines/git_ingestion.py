@@ -2,7 +2,7 @@
 Git 커밋 수집/임베딩/인덱싱 파이프라인.
 
 흐름: 커밋별 author_email → Spring /internal/users/lookup → author_id(UUID) 매핑
-      → GIT_COMMITS 저장 → message+diff 청킹 → 임베딩 → document_chunks + vector_store
+      → GIT_COMMITS 저장 → commit_message+diff 청킹 → 임베딩 → document_chunks + vector_store
       → usage_logs 누적
 
 author_email 조회 실패(404 또는 네트워크 오류)는 경고 로그만 남기고
@@ -31,28 +31,28 @@ logger = logging.getLogger(__name__)
 
 
 async def ingest_git_commits(
-    workspace_id: int,
-    data_source_id: int | None,
+    workspace_id: str,
+    source_id: str | None,
     commits: list[CommitData],
 ) -> None:
     """Git 커밋 인덱싱 백그라운드 태스크."""
     with SessionLocal() as db:
         try:
             total_tokens, embedding_model = await _run(
-                db, workspace_id, data_source_id, commits
+                db, workspace_id, source_id, commits
             )
             if total_tokens > 0:
                 log_embedding_usage(db, workspace_id, embedding_model, total_tokens)
             db.commit()
         except Exception:
-            logger.exception("git_ingestion failed: workspace_id=%d", workspace_id)
+            logger.exception("git_ingestion failed: workspace_id=%s", workspace_id)
             db.rollback()
 
 
 async def _run(
     db,
-    workspace_id: int,
-    data_source_id: int | None,
+    workspace_id: str,
+    source_id: str | None,
     commits: list[CommitData],
 ) -> tuple[int, str]:
     settings = get_settings()
@@ -74,14 +74,15 @@ async def _run(
         author_id = await _lookup_author_id(commit.author_email, settings)
 
         git_commit = GitCommit(
+            id=str(uuid.uuid4()),
             workspace_id=workspace_id,
-            data_source_id=data_source_id,
+            source_id=source_id,
             commit_hash=commit.commit_hash,
             author_id=author_id,
             author_name=commit.author_name,
             author_email=commit.author_email,
-            message=commit.message,
-            committed_at=commit.committed_at,
+            commit_message=commit.message,
+            pushed_at=commit.committed_at,
         )
         db.add(git_commit)
         db.flush()
