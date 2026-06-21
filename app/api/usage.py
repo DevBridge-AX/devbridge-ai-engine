@@ -20,7 +20,7 @@ router = APIRouter()
 
 @router.get("/summary")
 async def usage_summary(
-    workspace_id: int,
+    workspace_id: str,
     db: Session = Depends(get_db),
     _: None = Depends(verify_internal_api_key),
 ) -> dict:

@@ -14,8 +14,8 @@ from pydantic import BaseModel
 class DocumentIngestionRequest(BaseModel):
     """POST /ingestion/document 요청 스키마."""
 
-    workspace_id: int
-    data_source_id: int | None = None
+    workspace_id: str
+    source_id: str | None = None
     title: str
     doc_type: str
     file_path: str
@@ -35,6 +35,6 @@ class CommitData(BaseModel):
 class GitIngestionRequest(BaseModel):
     """POST /ingestion/git 요청 스키마."""
 
-    workspace_id: int
-    data_source_id: int | None = None
+    workspace_id: str
+    source_id: str | None = None
     commits: list[CommitData]

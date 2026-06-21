@@ -13,6 +13,6 @@ TODO:
 """
 
 
-async def export_training_data(workspace_id: int, dataset_version: str) -> str:
+async def export_training_data(workspace_id: str, dataset_version: str) -> str:
     """workspace_id 기준 LoRA 학습데이터 JSONL을 생성하고 경로를 반환. TODO: 구현."""
     raise NotImplementedError

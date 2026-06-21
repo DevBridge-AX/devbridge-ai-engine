@@ -16,6 +16,7 @@ import enum
 from datetime import date as date_, datetime
 
 from sqlalchemy import (
+    BigInteger,
     Date,
     DateTime,
     Enum,
@@ -41,10 +42,11 @@ class DataSource(Base):
 
     __tablename__ = "DATA_SOURCES"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    workspace_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    source_name: Mapped[str] = mapped_column(String(255), nullable=False)
     source_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="CONNECTED")
     config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -58,15 +60,30 @@ class KnowledgeDocument(Base):
 
     __tablename__ = "KNOWLEDGE_DOCUMENTS"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    workspace_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
-    data_source_id: Mapped[int | None] = mapped_column(
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    source_id: Mapped[str | None] = mapped_column(
         ForeignKey("DATA_SOURCES.id"), nullable=True
     )
+    uploaded_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
-    doc_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    source_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    document_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    analysis_status: Mapped[str] = mapped_column(String(50), nullable=False, default="PENDING")
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    keywords: Mapped[str | None] = mapped_column(Text, nullable=True)
+    risk_level: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    next_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    analysis_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    analysis_mode: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    vector_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    original_file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    stored_file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -79,11 +96,13 @@ class DatabaseSchema(Base):
 
     __tablename__ = "DATABASE_SCHEMAS"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    workspace_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
-    data_source_id: Mapped[int | None] = mapped_column(
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    source_id: Mapped[str | None] = mapped_column(
         ForeignKey("DATA_SOURCES.id"), nullable=True
     )
+    db_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    schema_ddl: Mapped[str] = mapped_column(Text, nullable=False)
     schema_name: Mapped[str] = mapped_column(String(255), nullable=False)
     table_name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -91,6 +110,7 @@ class DatabaseSchema(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class GitCommit(Base):
@@ -102,18 +122,22 @@ class GitCommit(Base):
 
     __tablename__ = "GIT_COMMITS"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    workspace_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
-    data_source_id: Mapped[int | None] = mapped_column(
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    source_id: Mapped[str | None] = mapped_column(
         ForeignKey("DATA_SOURCES.id"), nullable=True
     )
-    commit_hash: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
+    commit_hash: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
     author_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     author_name: Mapped[str] = mapped_column(String(255), nullable=False)
     author_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    message: Mapped[str] = mapped_column(Text, nullable=False)
-    committed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    commit_message: Mapped[str] = mapped_column(Text, nullable=False)
+    pushed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("workspace_id", "commit_hash", name="uq_git_commits_workspace_hash"),
@@ -139,9 +163,12 @@ class DocumentChunk(Base):
     __tablename__ = "document_chunks"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    workspace_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
-    source_type: Mapped[ChunkSourceType] = mapped_column(Enum(ChunkSourceType), nullable=False)
-    source_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    source_type: Mapped[ChunkSourceType] = mapped_column(
+        Enum(ChunkSourceType, values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
+    )
+    source_id: Mapped[str] = mapped_column(String(36), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     chunk_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     embedding_model: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -167,7 +194,7 @@ class UsageLog(Base):
     __tablename__ = "usage_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    workspace_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     date: Mapped[date_] = mapped_column(Date, nullable=False)
     embedding_model: Mapped[str] = mapped_column(String(100), nullable=False)
     embedding_tokens: Mapped[float] = mapped_column(Numeric(12, 1), nullable=False, default=0.0)

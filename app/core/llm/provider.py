@@ -92,6 +92,7 @@ def _build_body(
     max_tokens: int = 4096,
     stream: bool = False,
     json_output: bool = False,
+    response_schema: dict | None = None,
 ) -> dict:
     """Provider별 요청 바디를 구성합니다.
 
@@ -132,6 +133,9 @@ def _build_body(
     gen_config: dict = {"maxOutputTokens": max_tokens}
     if json_output:
         gen_config["responseMimeType"] = "application/json"
+    if response_schema:
+        gen_config["responseMimeType"] = "application/json"
+        gen_config["responseSchema"] = response_schema
     return {"contents": contents, "generationConfig": gen_config}
 
 
@@ -298,13 +302,21 @@ async def call_grounding(prompt: str) -> tuple[dict, LLMUsage]:
     settings = get_settings()
     provider = _detect_provider(settings.grounding_model)
     messages = [{"role": "user", "content": prompt}]
+    grounding_schema = {
+        "type": "OBJECT",
+        "properties": {
+            "is_groundable": {"type": "BOOLEAN"},
+            "confidence": {"type": "NUMBER"},
+        },
+        "required": ["is_groundable", "confidence"],
+    }
     body = _build_body(
         provider,
         settings.grounding_model,
         messages,
         _GROUNDING_SYSTEM_PROMPT,
         max_tokens=64,
-        json_output=True,
+        response_schema=grounding_schema,
     )
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -331,8 +343,8 @@ async def call_grounding(prompt: str) -> tuple[dict, LLMUsage]:
     try:
         return json.loads(text), usage
     except json.JSONDecodeError:
-        logger.warning("call_grounding: JSON 파싱 실패, 폴백 반환. 응답: %r", text)
-        return {"is_groundable": False, "confidence": 0.0}, usage
+        logger.warning("call_grounding: JSON 파싱 실패. 응답: %r", text)
+        return {}, usage
 
 
 async def call_structured(
