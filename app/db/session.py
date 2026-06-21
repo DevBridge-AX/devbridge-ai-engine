@@ -63,4 +63,4 @@ def log_embedding_usage(
             )
         )
     else:
-        existing.embedding_tokens += tokens
+        existing.embedding_tokens = float(existing.embedding_tokens) + tokens

@@ -164,7 +164,10 @@ class DocumentChunk(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     workspace_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
-    source_type: Mapped[ChunkSourceType] = mapped_column(Enum(ChunkSourceType), nullable=False)
+    source_type: Mapped[ChunkSourceType] = mapped_column(
+        Enum(ChunkSourceType, values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
+    )
     source_id: Mapped[str] = mapped_column(String(36), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     chunk_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
