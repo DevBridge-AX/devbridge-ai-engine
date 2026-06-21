@@ -9,6 +9,9 @@ POST /ingestion/document — KNOWLEDGE_DOCUMENTS 레코드 생성(analysis_statu
 POST /ingestion/git      — Git 커밋 인덱싱 트리거
 """
 
+import uuid
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy.orm import Session
 
@@ -30,13 +33,17 @@ async def ingest_document_endpoint(
     _: None = Depends(verify_internal_api_key),
 ) -> dict:
     """문서 인덱싱을 예약합니다. 완료 여부는 KNOWLEDGE_DOCUMENTS.analysis_status로 확인합니다."""
+    now = datetime.now(timezone.utc)
     doc = KnowledgeDocument(
+        id=str(uuid.uuid4()),
         workspace_id=request.workspace_id,
         source_id=request.source_id,
         title=request.title,
         document_type=request.doc_type,
         file_path=request.file_path,
         analysis_status="PENDING",
+        created_at=now,
+        updated_at=now,
     )
     db.add(doc)
     db.commit()
