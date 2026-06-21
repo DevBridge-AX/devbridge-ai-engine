@@ -104,9 +104,7 @@ class GitCommit(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     workspace_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
-    data_source_id: Mapped[int | None] = mapped_column(
-        ForeignKey("DATA_SOURCES.id"), nullable=True
-    )
+    data_source_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     commit_hash: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
     author_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     author_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -139,7 +137,7 @@ class DocumentChunk(Base):
     __tablename__ = "document_chunks"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    workspace_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    workspace_id: Mapped[str] = mapped_column(String(100), nullable=False)
     source_type: Mapped[ChunkSourceType] = mapped_column(Enum(ChunkSourceType), nullable=False)
     source_id: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
