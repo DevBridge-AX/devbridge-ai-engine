@@ -301,6 +301,19 @@ _GROUNDING_SYSTEM_PROMPT = """\
 
 반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트는 포함하지 마세요.
 {"is_groundable": true/false, "confidence": 0.0~1.0}
+
+[Few-Shot 판정 예시]
+1. 질문: "반가워요! 너는 이름이 뭐야?"
+   판정: {"is_groundable": true, "confidence": 1.0}
+
+2. 질문: "Java 21 버전의 가상 스레드(Virtual Thread)에 대해 설명해줘."
+   판정: {"is_groundable": true, "confidence": 1.0}
+
+3. 질문: "우리 회사 결제 시스템에서 사용하는 배치의 실행 스케줄 명세서 보여줘."
+   - 검색된 컨텍스트에 관련 명세서나 배치 스케줄에 관한 파일/내용이 존재할 때:
+     판정: {"is_groundable": true, "confidence": 0.9}
+   - 검색된 컨텍스트에 관련 내용이 전혀 없을 때:
+     판정: {"is_groundable": false, "confidence": 0.0}
 """
 
 async def call_grounding(prompt: str) -> tuple[dict, LLMUsage]:
