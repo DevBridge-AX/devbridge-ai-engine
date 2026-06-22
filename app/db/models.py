@@ -125,9 +125,11 @@ class GitCommit(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     source_id: Mapped[str | None] = mapped_column(
-        ForeignKey("DATA_SOURCES.id"), nullable=True
+        "data_source_id", ForeignKey("DATA_SOURCES.id"), nullable=True
     )
     commit_hash: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
+    short_hash: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    branch_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     author_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     author_name: Mapped[str] = mapped_column(String(255), nullable=False)
     author_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -143,7 +145,29 @@ class GitCommit(Base):
         UniqueConstraint("workspace_id", "commit_hash", name="uq_git_commits_workspace_hash"),
     )
 
+class GitCommitAnalysis(Base):
+    """AI analysis result for a Git commit."""
 
+    __tablename__ = "GIT_COMMIT_ANALYSIS"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    commit_id: Mapped[str] = mapped_column(
+        ForeignKey("GIT_COMMITS.id"), unique=True, nullable=False
+    )
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    impact_area: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    risk_level: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    next_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    vector_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    index_status: Mapped[str] = mapped_column(String(50), nullable=False, default="PENDING")
+    analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    
 class ChunkSourceType(str, enum.Enum):
     """document_chunks.source_type 값. /chat 응답의 citations[].source_type과 동일합니다."""
 
