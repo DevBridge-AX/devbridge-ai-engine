@@ -125,7 +125,7 @@ class GitCommit(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     source_id: Mapped[str | None] = mapped_column(
-        "data_source_id", ForeignKey("DATA_SOURCES.id"), nullable=True
+        ForeignKey("DATA_SOURCES.id"), nullable=True
     )
     commit_hash: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
     short_hash: Mapped[str | None] = mapped_column(String(20), nullable=True)
