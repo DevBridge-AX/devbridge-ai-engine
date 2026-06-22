@@ -284,10 +284,24 @@ async def call_rewrite(
 _GROUNDING_SYSTEM_PROMPT = """\
 검색된 컨텍스트가 사용자 질문에 답변 가능한지 평가하세요.
 
-반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트는 포함하지 마세요.
-{"is_groundable": true/false, "confidence": 0.0~1.0}\
-"""
+질문 유형을 분석하여 아래 규칙에 따라 'is_groundable' 여부를 판정하세요:
 
+1. [일상 잡담 및 인사]
+   - 질문이 일상적인 인사(안녕하세요), 감사 표현(감사합니다), 어시스턴트 정체성 확인(너는 누구니) 등인 경우:
+     * 컨텍스트 내용에 상관없이 "is_groundable"을 true로 설정하세요.
+
+2. [범용 기술/일반 지식 질문]
+   - 질문이 특정 프로젝트나 워크스페이스에 종속되지 않는 범용적인 지식(예: "JWT가 무엇인가요?", "FastAPI Dependency Injection 사용법", "SQL JOIN 문법")인 경우:
+     * 컨텍스트 내용에 상관없이 "is_groundable"을 true로 설정하세요.
+
+3. [프로젝트/워크스페이스 고유 질문]
+   - 질문이 사내 프로젝트 소스 코드, 특정 데이터베이스 테이블 스키마, 특정 문서 등 워크스페이스 내부 정보에 의존하는 경우:
+     * 컨텍스트 내에 질문에 답할 수 있는 명확한 근거가 존재하는 경우에만 "is_groundable"을 true로 설정하세요.
+     * 컨텍스트에 관련 근거가 전혀 없는 경우 "is_groundable"을 false로 설정하세요.
+
+반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트는 포함하지 마세요.
+{"is_groundable": true/false, "confidence": 0.0~1.0}
+"""
 
 async def call_grounding(prompt: str) -> tuple[dict, LLMUsage]:
     """GROUNDING_MODEL(gemini-*)로 그라운딩 이진 판정을 수행하고 파싱된 dict를 반환합니다.
