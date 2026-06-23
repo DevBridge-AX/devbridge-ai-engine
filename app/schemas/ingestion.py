@@ -62,6 +62,12 @@ class GitIngestionRequest(BaseModel):
     commits: list[CommitData]
 
 
+class RetryIngestionRequest(BaseModel):
+    """Request schema for POST /api/ingestion/document/retry."""
+
+    document_id: str
+
+
 class OwnerAnswerIngestionRequest(BaseModel):
     """Request schema for POST /api/ingestion/owner-answer."""
 

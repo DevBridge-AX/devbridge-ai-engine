@@ -12,7 +12,7 @@ POST /ingestion/git      — Git 커밋 인덱싱 트리거
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -26,6 +26,7 @@ from app.schemas.ingestion import (
     DocumentIngestionRequest,
     GitIngestionRequest,
     OwnerAnswerIngestionRequest,
+    RetryIngestionRequest,
 )
 
 router = APIRouter()
@@ -135,3 +136,29 @@ async def ingest_owner_answer_endpoint(
         "status": "accepted",
         "confirmation_id": request.confirmation_id,
     }
+
+
+@router.post("/document/retry", status_code=status.HTTP_202_ACCEPTED)
+async def retry_document_ingestion(
+    request: RetryIngestionRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_internal_api_key),
+) -> dict:
+    """FAILED/PENDING 상태의 문서를 재인덱싱합니다."""
+    doc = db.execute(
+        select(KnowledgeDocument).where(
+            KnowledgeDocument.id == request.document_id
+        )
+    ).scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    background_tasks.add_task(
+        ingest_document,
+        workspace_id=doc.workspace_id,
+        knowledge_document_id=doc.id,
+        file_path=doc.file_path,
+        doc_type=doc.document_type or "general",
+    )
+    return {"document_id": doc.id, "status": "RETRY_SCHEDULED"}
