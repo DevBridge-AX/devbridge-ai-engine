@@ -1,40 +1,62 @@
 """
-인덱싱(문서/Git) 요청/응답 Pydantic 스키마.
+Indexing request/response schemas for document and Git ingestion.
 
-호출 주체는 Spring datasource 도메인입니다. 사용자가 datasource를 등록하면
-Spring이 이 엔드포인트를 호출하며, FastAPI는 202를 즉시 반환하고 백그라운드에서
-인덱싱을 처리합니다.
+The Spring backend calls these endpoints when a datasource or document is
+registered. FastAPI returns 202 immediately and processes ingestion in a
+background task.
 """
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DocumentIngestionRequest(BaseModel):
-    """POST /ingestion/document 요청 스키마."""
+    """Request schema for POST /api/ingestion/document."""
 
     workspace_id: str
     source_id: str | None = None
+    data_source_id: str | None = None
+    backend_document_id: str | None = None
+    task_id: str | None = None
     title: str
     doc_type: str
     file_path: str
 
 
+class GitChangedFileData(BaseModel):
+    """Changed file data included in a Git commit ingestion payload."""
+
+    file_path: str
+    change_type: str | None = None
+    additions: int | None = None
+    deletions: int | None = None
+    patch: str | None = None
+    diff_summary: str | None = None
+
+
 class CommitData(BaseModel):
-    """git_ingestion에서 처리할 개별 커밋 데이터."""
+    """Single Git commit payload sent by the Spring backend."""
 
     commit_hash: str
-    author_name: str
-    author_email: str
+    short_hash: str | None = None
+    author_name: str | None = None
+    author_email: str | None = None
     message: str
     committed_at: datetime
-    diff: str
+    branch_name: str | None = None
+
+    # New backend payload shape.
+    changed_files: list[GitChangedFileData] = Field(default_factory=list)
+
+    # Legacy compatibility. Older callers may still send a single diff string.
+    diff: str | None = None
 
 
 class GitIngestionRequest(BaseModel):
-    """POST /ingestion/git 요청 스키마."""
+    """Request schema for POST /api/ingestion/git."""
 
     workspace_id: str
     source_id: str | None = None
+    data_source_id: str | None = None
     commits: list[CommitData]

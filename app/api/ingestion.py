@@ -65,11 +65,19 @@ async def ingest_git_endpoint(
     background_tasks: BackgroundTasks,
     _: None = Depends(verify_internal_api_key),
 ) -> dict:
-    """Git 커밋 인덱싱을 예약합니다. 이미 인덱싱된 커밋은 건너뜁니다."""
+    """Schedule Git commit indexing."""
+    source_id = request.source_id or request.data_source_id
+
     background_tasks.add_task(
         ingest_git_commits,
         workspace_id=request.workspace_id,
-        source_id=request.source_id,
+        source_id=source_id,
         commits=request.commits,
     )
-    return {"status": "accepted", "commit_count": len(request.commits)}
+
+    return {
+        "status": "accepted",
+        "workspace_id": request.workspace_id,
+        "source_id": source_id,
+        "commit_count": len(request.commits),
+    }
