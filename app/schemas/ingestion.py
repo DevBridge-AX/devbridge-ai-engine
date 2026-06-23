@@ -60,3 +60,20 @@ class GitIngestionRequest(BaseModel):
     source_id: str | None = None
     data_source_id: str | None = None
     commits: list[CommitData]
+
+
+class RetryIngestionRequest(BaseModel):
+    """Request schema for POST /api/ingestion/document/retry."""
+
+    document_id: str
+
+
+class OwnerAnswerIngestionRequest(BaseModel):
+    """Request schema for POST /api/ingestion/owner-answer."""
+
+    workspace_id: str
+    confirmation_id: str
+    question: str
+    answer: str
+    owner_employee_id: str
+    owner_name: str

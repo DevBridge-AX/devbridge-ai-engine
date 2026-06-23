@@ -107,4 +107,9 @@ def _resolve_title_and_author(
         title = f"{row.schema_name}.{row.table_name}" if row else f"Schema #{chunk.source_id}"
         return title, None
 
+    if source_type == ChunkSourceType.OWNER_ANSWER:
+        meta = chunk.chunk_metadata or {}
+        owner_name = meta.get("owner_name", "담당자")
+        return f"담당자 답변: {owner_name}", None
+
     return f"Chunk #{chunk.source_id}", None
