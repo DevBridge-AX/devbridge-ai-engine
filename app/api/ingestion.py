@@ -20,7 +20,12 @@ from app.db.models import KnowledgeDocument
 from app.db.session import get_db
 from app.pipelines.document_ingestion import ingest_document
 from app.pipelines.git_ingestion import ingest_git_commits
-from app.schemas.ingestion import DocumentIngestionRequest, GitIngestionRequest
+from app.pipelines.owner_answer_ingestion import ingest_owner_answer
+from app.schemas.ingestion import (
+    DocumentIngestionRequest,
+    GitIngestionRequest,
+    OwnerAnswerIngestionRequest,
+)
 
 router = APIRouter()
 
@@ -81,4 +86,26 @@ async def ingest_git_endpoint(
         "workspace_id": request.workspace_id,
         "source_id": source_id,
         "commit_count": len(request.commits),
+    }
+
+
+@router.post("/owner-answer", status_code=status.HTTP_202_ACCEPTED)
+async def ingest_owner_answer_endpoint(
+    request: OwnerAnswerIngestionRequest,
+    background_tasks: BackgroundTasks,
+    _: None = Depends(verify_internal_api_key),
+) -> dict:
+    """담당자 답변(Q&A)을 벡터 DB에 인덱싱합니다."""
+    background_tasks.add_task(
+        ingest_owner_answer,
+        workspace_id=request.workspace_id,
+        confirmation_id=request.confirmation_id,
+        question=request.question,
+        answer=request.answer,
+        owner_employee_id=request.owner_employee_id,
+        owner_name=request.owner_name,
+    )
+    return {
+        "status": "accepted",
+        "confirmation_id": request.confirmation_id,
     }

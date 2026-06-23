@@ -174,6 +174,7 @@ class ChunkSourceType(str, enum.Enum):
     DOCUMENT = "document"
     GIT_COMMIT = "git_commit"
     DB_SCHEMA = "db_schema"
+    OWNER_ANSWER = "owner_answer"
 
 
 class DocumentChunk(Base):
