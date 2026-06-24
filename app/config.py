@@ -48,7 +48,7 @@ class Settings(BaseSettings):
 
     # LLM provider
     main_model: str = "claude-sonnet-4-6"
-    rewrite_model: str = "gpt-5.4-nano"
+    rewrite_model: str = "claude-sonnet-4-6"
     grounding_model: str = "gemini-3.5-flash-lite"
 
     # Day 2 document analysis mode
