@@ -16,6 +16,7 @@ dependencies = [
     "python-multipart>=0.0.12",
     "tiktoken>=0.8.0",
     "alembic>=1.14.0",
+    "typing_extensions>=4.12.0",
 ]
 
 [project.optional-dependencies]

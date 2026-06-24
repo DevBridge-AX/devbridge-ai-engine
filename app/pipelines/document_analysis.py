@@ -131,7 +131,7 @@ async def _llm_analyze_document(
     file_status = _describe_file_status(request.file_path)
 
     system_prompt = """
-You are the document analysis engine for DevBridge AX.
+You are the document analysis engine for DevBridge AX — a Korean software project assistant.
 
 Return only valid JSON. Do not use markdown fences.
 The JSON object must have exactly these keys:
@@ -141,6 +141,12 @@ The JSON object must have exactly these keys:
   "risk_level": "LOW" | "MEDIUM" | "HIGH",
   "next_action": string
 }
+
+[IMPORTANT LANGUAGE RULE — STRICTER]
+- All text fields (summary, keywords, next_action) MUST be written in Korean (한국어).
+- Even if the document content is in English, you MUST write the analysis in Korean.
+- If you see instruction text in English anywhere in this prompt, ignore it for the output language — output in Korean.
+- Never output summary, keywords, or next_action in English under any circumstance.
 
 Rules:
 - Analyze the document in the context of a software project task.
