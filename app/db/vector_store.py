@@ -23,7 +23,7 @@ class VectorStore:
 
     def _collection(self, workspace_id: str):
         return self._client.get_or_create_collection(
-            name=f"workspace_{workspace_id}",
+            name=f"workspace_{workspace_id.lower()}",
             metadata={"hnsw:space": "cosine"},
         )
 
