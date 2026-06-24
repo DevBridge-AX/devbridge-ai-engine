@@ -22,7 +22,6 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
-    Integer,
     JSON,
     Numeric,
     String,
@@ -62,9 +61,7 @@ class KnowledgeDocument(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
-    source_id: Mapped[str | None] = mapped_column(
-        ForeignKey("DATA_SOURCES.id"), nullable=True
-    )
+    source_id: Mapped[str] = mapped_column(String(36), nullable=False)
     uploaded_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -98,13 +95,11 @@ class DatabaseSchema(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
-    source_id: Mapped[str | None] = mapped_column(
-        ForeignKey("DATA_SOURCES.id"), nullable=True
-    )
+    source_id: Mapped[str] = mapped_column(String(36), nullable=False)
     db_name: Mapped[str] = mapped_column(String(100), nullable=False)
     schema_ddl: Mapped[str] = mapped_column(Text, nullable=False)
-    schema_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    table_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    schema_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    table_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -124,14 +119,12 @@ class GitCommit(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
-    source_id: Mapped[str | None] = mapped_column(
-        ForeignKey("DATA_SOURCES.id"), nullable=True
-    )
+    source_id: Mapped[str] = mapped_column(String(36), nullable=False)
     commit_hash: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
     short_hash: Mapped[str | None] = mapped_column(String(20), nullable=True)
     branch_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     author_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    author_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    author_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     author_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     commit_message: Mapped[str] = mapped_column(Text, nullable=False)
     pushed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -174,6 +167,7 @@ class ChunkSourceType(str, enum.Enum):
     DOCUMENT = "document"
     GIT_COMMIT = "git_commit"
     DB_SCHEMA = "db_schema"
+    OWNER_ANSWER = "owner_answer"
 
 
 class DocumentChunk(Base):

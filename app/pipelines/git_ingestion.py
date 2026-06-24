@@ -24,6 +24,7 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.core.embeddings.embedder import embed_texts
 from app.core.llm.provider import call_structured
+from app.core.rag.bm25_index import get_bm25_manager
 from app.core.rag.chunker import chunk_document
 from app.db.models import ChunkSourceType, DocumentChunk, GitCommit, GitCommitAnalysis
 from app.db.session import SessionLocal, log_embedding_usage
@@ -103,6 +104,8 @@ async def _run(
             analysis=analysis,
             vector_id=primary_vector_id,
         )
+
+    get_bm25_manager().invalidate(workspace_id)
 
     return total_tokens, last_model
 
