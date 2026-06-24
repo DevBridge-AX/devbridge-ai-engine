@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # 그라운딩 유사도 1차 필터 임계치
     grounding_similarity_threshold: float = 0.35
 
+    # BM25 하이브리드 검색
+    bm25_enabled: bool = True
+    bm25_cache_ttl_seconds: int = 600
+
     # Spring backend 연동
     spring_backend_base_url: str = "http://localhost:8080"
     spring_user_lookup_path: str = "/internal/users/lookup"

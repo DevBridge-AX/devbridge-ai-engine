@@ -13,6 +13,7 @@ import logging
 import uuid
 
 from app.core.embeddings.embedder import embed_texts
+from app.core.rag.bm25_index import get_bm25_manager
 from app.core.rag.chunker import chunk_document
 from app.db.models import ChunkSourceType, DocumentChunk
 from app.db.session import SessionLocal, log_embedding_usage
@@ -107,3 +108,5 @@ async def _run(
         )
 
     log_embedding_usage(db, workspace_id, result.embedding_model, result.total_tokens)
+
+    get_bm25_manager().invalidate(workspace_id)
