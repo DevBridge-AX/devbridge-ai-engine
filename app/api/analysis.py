@@ -1,7 +1,7 @@
 """
-문서 분석 API 엔드포인트.
+문서 분석 및 워크스페이스 요약 API 엔드포인트.
 
-Spring Backend가 AI Engine에 문서 분석을 요청하는 엔드포인트를 제공합니다.
+Spring Backend가 AI Engine에 문서 분석 및 대시보드 요약을 요청합니다.
 """
 
 import logging
@@ -10,7 +10,12 @@ from fastapi import APIRouter, Depends, Request
 
 from app.core.security import verify_internal_api_key
 from app.pipelines.document_analysis import analyze_document
+from app.pipelines.workspace_summary import generate_workspace_summary
 from app.schemas.analysis import DocumentAnalysisRequest, DocumentAnalysisResponse
+from app.schemas.workspace_summary import (
+    WorkspaceSummaryRequest,
+    WorkspaceSummaryResponse,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -36,3 +41,12 @@ async def analyze_document_debug(request: Request):
         "body_length": len(body),
         "body_preview": body[:500].decode("utf-8", errors="replace"),
     }
+
+
+@router.post("/workspace-summary", response_model=WorkspaceSummaryResponse)
+async def workspace_summary_endpoint(
+    request: WorkspaceSummaryRequest,
+    _: None = Depends(verify_internal_api_key),
+) -> WorkspaceSummaryResponse:
+    """워크스페이스 대시보드 메트릭 기반 AI 요약을 생성합니다."""
+    return await generate_workspace_summary(request)
