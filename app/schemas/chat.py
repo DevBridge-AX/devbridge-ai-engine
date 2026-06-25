@@ -68,10 +68,12 @@ class TokenUsage(BaseModel):
     """/chat 호출의 토큰 사용량.
 
     turn 1에서는 rewrite가 호출되지 않으므로 rewrite는 None입니다.
+    유사도 1차 필터에서 차단되면 grounding LLM 호출이 없으므로 grounding은 None입니다.
     """
 
     main: TokenUsageDetail
     rewrite: Optional[TokenUsageDetail] = None
+    grounding: Optional[TokenUsageDetail] = None
     context_truncated: bool
 
 
