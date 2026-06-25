@@ -60,9 +60,7 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
     chunks = await retriever.retrieve(rewritten_query, request.workspace_id, db, top_k=5)
 
     grounding_result = await grounding.assess(chunks, request.content)
-
-    # grounding 2차 판정 토큰을 rewrite 사용량에 합산 (같은 REWRITE_MODEL)
-    rewrite_usage = _merge_usage(rewrite_usage, grounding_result.llm_usage)
+    grounding_usage = grounding_result.llm_usage
 
     citations = _build_citations(chunks)
 
@@ -83,6 +81,7 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
                         completion_tokens=0,
                     ),
                     rewrite=_to_usage_detail(rewrite_usage) if rewrite_usage else None,
+                    grounding=_to_usage_detail(grounding_usage) if grounding_usage else None,
                     context_truncated=context_truncated,
                 ),
             ).model_dump(),
@@ -115,6 +114,7 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
             token_usage=TokenUsage(
                 main=_to_usage_detail(main_usage),
                 rewrite=_to_usage_detail(rewrite_usage) if rewrite_usage else None,
+                grounding=_to_usage_detail(grounding_usage) if grounding_usage else None,
                 context_truncated=context_truncated,
             ),
         ).model_dump(),
@@ -153,14 +153,3 @@ def _to_usage_detail(usage: LLMUsage) -> TokenUsageDetail:
     )
 
 
-def _merge_usage(base: LLMUsage | None, extra: LLMUsage | None) -> LLMUsage | None:
-    """두 LLMUsage를 합산합니다. 같은 모델(REWRITE_MODEL)을 가정합니다."""
-    if extra is None:
-        return base
-    if base is None:
-        return extra
-    return LLMUsage(
-        model=base.model,
-        prompt_tokens=base.prompt_tokens + extra.prompt_tokens,
-        completion_tokens=base.completion_tokens + extra.completion_tokens,
-    )
