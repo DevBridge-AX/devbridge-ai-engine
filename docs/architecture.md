@@ -5,6 +5,10 @@
 사람이 읽기 좋은 형태로 정리합니다. 규칙으로서의 요약은 [`CLAUDE.md`](../CLAUDE.md)와
 [`.claude/rules/db-boundary.md`](../.claude/rules/db-boundary.md)를 참고하세요.
 
+> **워크스페이스 내부 문서/데이터소스 단위 접근 제어**(task 기반 스코핑, 민감도
+> 플래그 등, 아직 미구현)는 [`access-control.md`](access-control.md)에 별도
+> 설계 문서로 정리되어 있습니다.
+
 ## 1. 전체 그림
 
 ```
