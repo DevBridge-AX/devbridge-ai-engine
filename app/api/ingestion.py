@@ -58,6 +58,7 @@ async def ingest_document_endpoint(
                 title=request.title,
                 document_type=request.doc_type,
                 file_path=request.file_path,
+                task_id=request.task_id,
                 analysis_status="PENDING",
                 created_at=now,
                 updated_at=now,
@@ -74,6 +75,7 @@ async def ingest_document_endpoint(
             title=request.title,
             document_type=request.doc_type,
             file_path=request.file_path,
+            task_id=request.task_id,
             analysis_status="PENDING",
             created_at=now,
             updated_at=now,
@@ -88,6 +90,8 @@ async def ingest_document_endpoint(
         knowledge_document_id=doc.id,
         file_path=request.file_path,
         doc_type=request.doc_type,
+        task_id=request.task_id or doc.task_id,
+        sensitivity_level=request.sensitivity_level,
     )
     return {"knowledge_document_id": doc.id, "status": "PENDING"}
 
@@ -106,6 +110,7 @@ async def ingest_git_endpoint(
         workspace_id=request.workspace_id,
         source_id=source_id,
         commits=request.commits,
+        sensitivity_level=request.sensitivity_level,
     )
 
     return {
@@ -160,5 +165,7 @@ async def retry_document_ingestion(
         knowledge_document_id=doc.id,
         file_path=doc.file_path,
         doc_type=doc.document_type or "general",
+        task_id=doc.task_id,
+        sensitivity_level=request.sensitivity_level,
     )
     return {"document_id": doc.id, "status": "RETRY_SCHEDULED"}
