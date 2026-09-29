@@ -31,7 +31,7 @@ def _request(**overrides) -> ChatRequest:
 def _run_pipeline(monkeypatch, request: ChatRequest) -> dict:
     captured: dict = {}
 
-    async def fake_retrieve(query, workspace_id, db, top_k=5, access=None):
+    async def fake_retrieve(query, workspace_id, db, top_k=5, access=None, timer=None):
         captured["access"] = access
         return []
 
@@ -43,6 +43,8 @@ def _run_pipeline(monkeypatch, request: ChatRequest) -> dict:
     monkeypatch.setattr(
         chat_pipeline, "get_settings", lambda: SimpleNamespace(main_model="fake-main")
     )
+    # 이 테스트는 access 필드 전달만 검증하므로 metrics 기록은 no-op으로 대체(레포에 파일 미생성).
+    monkeypatch.setattr(chat_pipeline, "record_metric", lambda event, payload: None)
 
     async def consume():
         return [event async for event in chat_pipeline.run(request, db=None)]
