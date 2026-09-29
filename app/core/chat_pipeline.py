@@ -21,7 +21,7 @@ from app.core.llm import query_rewriter
 from app.core.llm.persona_prompts import get_system_prompt
 from app.core.llm.provider import LLMUsage
 from app.core.rag import grounding, retriever
-from app.core.rag.retriever import RetrievedChunk
+from app.core.rag.retriever import AccessFilter, RetrievedChunk
 from app.core.utils.token_counter import truncate_history
 from app.schemas.chat import (
     ChatDoneEvent,
@@ -57,7 +57,13 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
     else:
         rewritten_query, rewrite_usage = await query_rewriter.rewrite(request.content, truncated_history)
 
-    chunks = await retriever.retrieve(rewritten_query, request.workspace_id, db, top_k=5)
+    access = AccessFilter(
+        accessible_task_ids=request.accessible_task_ids,
+        can_view_restricted=request.can_view_restricted,
+    )
+    chunks = await retriever.retrieve(
+        rewritten_query, request.workspace_id, db, top_k=5, access=access
+    )
 
     grounding_result = await grounding.assess(chunks, request.content)
     grounding_usage = grounding_result.llm_usage
