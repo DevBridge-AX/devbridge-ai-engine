@@ -12,12 +12,16 @@ bm25_enabled=False:
 
 similarity_score는 원본 cosine 유사도를 유지합니다 (grounding.py 호환).
 BM25-only 히트는 similarity_score=0.0으로, grounding threshold에서 자연 필터링됩니다.
+
+접근 제어(docs/access-control.md §6): access가 주어지면 overfetch된 벡터·BM25 후보를
+RRF 병합 전에 document_chunks의 task_id/sensitivity_level 스냅샷으로 사후 필터링합니다.
+병합 후에 거르면 최종 결과가 top_k보다 줄어들기 때문입니다.
 """
 
 import asyncio
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -36,6 +40,22 @@ _OVERFETCH_FACTOR = 3
 _RRF_K = 60
 
 
+@dataclass(frozen=True)
+class AccessFilter:
+    """검색 단계에서 강제할 접근 범위. 권한 계산은 Spring 책임이며 이 레포는 강제만 합니다.
+
+    - accessible_task_ids: None이면 task 제한 없음. 리스트면 task 미지정 청크 + 해당 task 청크만 허용.
+    - can_view_restricted: False면 sensitivity_level='restricted' 청크 제외.
+    """
+
+    accessible_task_ids: list[str] | None = None
+    can_view_restricted: bool = False
+
+    @property
+    def is_unrestricted(self) -> bool:
+        return self.accessible_task_ids is None and self.can_view_restricted
+
+
 @dataclass
 class RetrievedChunk:
     chunk_id: int
@@ -52,15 +72,17 @@ async def retrieve(
     workspace_id: str,
     db: Session,
     top_k: int = 5,
+    access: AccessFilter | None = None,
 ) -> list[RetrievedChunk]:
     """쿼리에 대한 관련 document_chunks를 유사도 순으로 반환합니다.
 
     bm25_enabled=True일 때 하이브리드 검색(BM25 + Vector, RRF 병합)을 수행합니다.
+    access가 None이면 접근 제어 없이 검색합니다.
     """
     settings = get_settings()
 
     if not settings.bm25_enabled:
-        return await _vector_only_retrieve(query, workspace_id, db, top_k)
+        return await _vector_only_retrieve(query, workspace_id, db, top_k, access)
 
     overfetch_k = top_k * _OVERFETCH_FACTOR
 
@@ -71,6 +93,15 @@ async def retrieve(
     vector_results = get_vector_store().search(
         query_embedding, workspace_id=workspace_id, top_k=overfetch_k
     )
+
+    if access is not None and not access.is_unrestricted:
+        allowed = _allowed_chunk_ids(
+            {r["chunk_id"] for r in vector_results} | {r.chunk_id for r in bm25_results},
+            access,
+            db,
+        )
+        vector_results = [r for r in vector_results if r["chunk_id"] in allowed]
+        bm25_results = [r for r in bm25_results if r.chunk_id in allowed]
 
     merged = _rrf_merge(vector_results, bm25_results, top_k)
     if not merged:
@@ -84,14 +115,21 @@ async def _vector_only_retrieve(
     workspace_id: str,
     db: Session,
     top_k: int,
+    access: AccessFilter | None = None,
 ) -> list[RetrievedChunk]:
     """기존 vector-only 검색 경로."""
     embed_result = await embed_texts([query])
     query_embedding = embed_result.embeddings[0]
 
+    restricted = access is not None and not access.is_unrestricted
     raw_results = get_vector_store().search(
-        query_embedding, workspace_id=workspace_id, top_k=top_k
+        query_embedding,
+        workspace_id=workspace_id,
+        top_k=top_k * _OVERFETCH_FACTOR if restricted else top_k,
     )
+    if restricted:
+        allowed = _allowed_chunk_ids({r["chunk_id"] for r in raw_results}, access, db)
+        raw_results = [r for r in raw_results if r["chunk_id"] in allowed][:top_k]
     if not raw_results:
         return []
 
@@ -143,6 +181,29 @@ def _search_bm25_sync(
     top_k: int,
 ) -> list[BM25SearchResult]:
     return get_bm25_manager().search(query, workspace_id, db, top_k)
+
+
+def _allowed_chunk_ids(
+    candidate_ids: set[int],
+    access: AccessFilter,
+    db: Session,
+) -> set[int]:
+    """후보 chunk_id 중 access 범위에 드는 id만 한 번의 쿼리로 추려 반환합니다."""
+    if not candidate_ids:
+        return set()
+
+    stmt = select(DocumentChunk.id).where(DocumentChunk.id.in_(candidate_ids))
+    if access.accessible_task_ids is not None:
+        stmt = stmt.where(
+            or_(
+                DocumentChunk.task_id.is_(None),
+                DocumentChunk.task_id.in_(access.accessible_task_ids),
+            )
+        )
+    if not access.can_view_restricted:
+        stmt = stmt.where(DocumentChunk.sensitivity_level != "restricted")
+
+    return set(db.execute(stmt).scalars().all())
 
 
 def _rrf_merge(
