@@ -75,6 +75,16 @@ class Settings(BaseSettings):
     spring_backend_base_url: str = "http://localhost:8080"
     spring_user_lookup_path: str = "/internal/users/lookup"
 
+    # Observability metrics (app/core/metrics.py)
+    # 요청/인덱싱 1건당 JSONL 1줄을 {metrics_dir}/{event}.jsonl에 append합니다.
+    # 파일 쓰기 실패는 요청 흐름에 영향을 주지 않도록 경고 로그만 남기고 무시합니다.
+    metrics_enabled: bool = True
+    metrics_dir: str = "./data/metrics"
+
+    # 인덱싱 파싱 판정: read_text(errors="replace") 치환 문자(�) 비율이 이 값을
+    # 초과하면 메트릭상 result=PARSE_WARN으로 구분합니다(analysis_status는 불변).
+    ingestion_parse_warn_ratio: float = 0.05
+
 
 @lru_cache
 def get_settings() -> Settings:
