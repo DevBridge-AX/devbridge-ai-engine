@@ -485,6 +485,8 @@ async def _collect_records(
     cases = load_dataset(dataset_path)
     if limit is not None:
         cases = cases[:limit]
+    if variant_names is None:
+        variant_names = list(VARIANTS)
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         tmp_path = Path(tmp)
