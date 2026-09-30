@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     # 초과하면 메트릭상 result=PARSE_WARN으로 구분합니다(analysis_status는 불변).
     ingestion_parse_warn_ratio: float = 0.05
 
+    # LoRA 학습데이터 export 출력 루트 ({dir}/{workspace_id}/{dataset_version}.jsonl)
+    training_data_dir: str = "./data/training"
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api import analysis, chat, ingestion, usage
+from app.api import analysis, chat, ingestion, training_data, usage
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,9 @@ app.include_router(ingestion.router, prefix="/api/ingestion", tags=["ingestion"]
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(usage.router, prefix="/api/usage", tags=["usage"])
 app.include_router(analysis.router, prefix="/api/analysis", tags=["analysis"])
+app.include_router(
+    training_data.router, prefix="/api/training-data", tags=["training-data"]
+)
 
 
 @app.get("/health", tags=["health"])
