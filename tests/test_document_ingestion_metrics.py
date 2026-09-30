@@ -192,3 +192,20 @@ class TestFailurePaths:
         assert record["failure_stage"] == "store"
         assert record["error_type"] == "RuntimeError"
         assert record["embedding_input_chars"] > 0
+
+
+class TestSemanticCacheInvalidation:
+
+    def test_success_invalidates_semantic_cache(self, db, patched_success, monkeypatch, metrics_tmp_dir):
+        import asyncio
+
+        invalidated: list[str] = []
+        monkeypatch.setattr(
+            document_ingestion,
+            "get_semantic_cache",
+            lambda: SimpleNamespace(invalidate_workspace=invalidated.append),
+        )
+
+        asyncio.run(document_ingestion._run(db, "ws-1", "doc-1", patched_success, "markdown"))
+
+        assert invalidated == ["ws-1"]

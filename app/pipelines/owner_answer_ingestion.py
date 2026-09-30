@@ -12,6 +12,7 @@ OWNER_CONFIRMATIONS 테이블은 Spring 소유이므로 직접 조회하지 않�
 import logging
 import uuid
 
+from app.core.cache.semantic_cache import get_semantic_cache
 from app.core.embeddings.embedder import embed_texts
 from app.core.rag.bm25_index import get_bm25_manager
 from app.core.rag.chunker import chunk_document
@@ -110,3 +111,4 @@ async def _run(
     log_embedding_usage(db, workspace_id, result.embedding_model, result.total_tokens)
 
     get_bm25_manager().invalidate(workspace_id)
+    get_semantic_cache().invalidate_workspace(workspace_id)
