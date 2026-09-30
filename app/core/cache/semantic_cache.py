@@ -86,6 +86,13 @@ class SemanticCache:
         # 워크스페이스 단위 LRU 순서: (ns, key) -> None (앞쪽이 가장 오래된 것)
         self._lru: dict[str, OrderedDict[tuple[CacheNamespace, int], None]] = {}
         self._next_key = 0
+        # 워크스페이스별 무효화 세대. invalidate_workspace마다 +1 되어, 조회 시점 이후
+        # 무효화가 일어났는지(저장 시 stale 여부)를 호출자가 확인할 수 있게 한다.
+        self._generations: dict[str, int] = {}
+
+    def generation(self, workspace_id: str) -> int:
+        """워크스페이스의 현재 무효화 세대(기본 0)를 반환합니다."""
+        return self._generations.get(workspace_id, 0)
 
     def now(self) -> float:
         """캐시가 사용하는 현재 시각(CacheEntry.created_at과 같은 시계)."""
@@ -143,6 +150,7 @@ class SemanticCache:
         for ns in [ns for ns in self._store if ns[0] == workspace_id]:
             del self._store[ns]
         self._lru.pop(workspace_id, None)
+        self._generations[workspace_id] = self._generations.get(workspace_id, 0) + 1
 
     def clear(self) -> None:
         self._store.clear()

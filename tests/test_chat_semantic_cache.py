@@ -54,6 +54,8 @@ def env(monkeypatch, tmp_path):
         cache=SemanticCache(threshold=THRESHOLD, ttl_seconds=3600, max_entries=100),
         embed_calls=[],
         retrieve_calls=[],
+        retrieve_kwargs=[],
+        on_stream=None,
         assess_calls=0,
         stream_calls=0,
         allowed_override=None,
@@ -69,10 +71,9 @@ def env(monkeypatch, tmp_path):
         state.embed_calls.append(list(texts))
         return SimpleNamespace(embeddings=[list(state.embedding) for _ in texts])
 
-    async def fake_retrieve(
-        query, workspace_id, db, top_k=5, access=None, timer=None, query_embedding=None
-    ):
-        state.retrieve_calls.append(query_embedding)
+    async def fake_retrieve(query, workspace_id, db, top_k=5, access=None, timer=None, **kwargs):
+        state.retrieve_kwargs.append(kwargs)
+        state.retrieve_calls.append(kwargs.get("query_embedding"))
         return [_chunk()]
 
     async def fake_assess(chunks, query):
@@ -81,6 +82,8 @@ def env(monkeypatch, tmp_path):
 
     async def fake_stream(messages, system_prompt, max_tokens=4096):
         state.stream_calls += 1
+        if state.on_stream is not None:
+            state.on_stream()
         for piece in state.answer_pieces:
             yield piece, None
         yield None, LLMUsage(model="claude-main", prompt_tokens=100, completion_tokens=20)
@@ -129,7 +132,7 @@ class TestFlagOff:
         events = _run(_request())
 
         assert env.embed_calls == []
-        assert env.retrieve_calls == [None]
+        assert env.retrieve_kwargs == [{}]  # query_embedding 키 자체가 전달되지 않는다
         assert env.cache.size() == 0
         assert events[-1].event == "done"
         record = _records(env)[0]
@@ -206,6 +209,19 @@ class TestStoreConditions:
         _run(_request())
         assert env.cache.size() == 0
         assert env.stream_calls == 0
+
+    def test_invalidation_during_stream_skips_store(self, env):
+        env.on_stream = lambda: env.cache.invalidate_workspace("ws-1")
+
+        events = _run(_request())
+
+        assert events[-1].event == "done"
+        assert env.cache.size() == 0
+
+    def test_invalidation_of_other_workspace_still_stores(self, env):
+        env.on_stream = lambda: env.cache.invalidate_workspace("other-ws")
+        _run(_request())
+        assert env.cache.size() == 1
 
     def test_empty_answer_not_stored(self, env):
         env.answer_pieces = ["  ", ""]

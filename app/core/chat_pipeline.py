@@ -22,6 +22,7 @@ app.core.metrics.record_metric으로 기록합니다(조기 종료·정상 경�
 """
 
 import hashlib
+import logging
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
@@ -47,6 +48,8 @@ from app.schemas.chat import (
     TokenUsage,
     TokenUsageDetail,
 )
+
+logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "persona-v1"
 
@@ -94,6 +97,7 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
     cache_lookup_ms: float | None = None
     cache = None
     ns = None
+    cache_generation = 0
 
     if cache_enabled:
         cache = get_semantic_cache()
@@ -107,6 +111,8 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
             PROMPT_VERSION,
             settings.main_model,
         )
+        # 스트림 도중 인덱싱 무효화가 일어나면 stale 답변을 저장하지 않도록 세대를 잡아 둔다.
+        cache_generation = cache.generation(request.workspace_id)
         lookup_start = time.perf_counter()
         found = cache.lookup(ns, query_embedding)
         cache_lookup_ms = (time.perf_counter() - lookup_start) * 1000
@@ -285,19 +291,22 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
         and grounding_result.fallback_reason is None
         and answer_text.strip()
     ):
-        cache.store(
-            ns,
-            query_embedding,
-            CacheEntry(
-                embedding=[],
-                query=rewritten_query,
-                answer=answer_text,
-                citations=[c.model_dump() for c in citations],
-                confidence=grounding_result.confidence,
-                suggested_owner_id=None,
-                created_at=cache.now(),
-            ),
-        )
+        if cache.generation(request.workspace_id) != cache_generation:
+            logger.debug("semantic cache store skipped: workspace invalidated during generation")
+        else:
+            cache.store(
+                ns,
+                query_embedding,
+                CacheEntry(
+                    embedding=[],
+                    query=rewritten_query,
+                    answer=answer_text,
+                    citations=[c.model_dump() for c in citations],
+                    confidence=grounding_result.confidence,
+                    suggested_owner_id=None,
+                    created_at=cache.now(),
+                ),
+            )
 
     yield ChatEvent(
         event="done",

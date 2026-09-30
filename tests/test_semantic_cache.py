@@ -148,6 +148,14 @@ class TestLifecycle:
         assert cache.lookup(_ns(), [1.0, 0.0]) is None
         assert cache.size() == 0
 
+    def test_generation_increments_on_invalidate_per_workspace(self):
+        cache = _cache()
+        assert cache.generation("a") == 0
+        cache.invalidate_workspace("a")
+        cache.invalidate_workspace("a")
+        assert cache.generation("a") == 2
+        assert cache.generation("b") == 0
+
     def test_clear(self):
         cache = _cache()
         cache.store(_ns(), [1.0, 0.0], _entry())
