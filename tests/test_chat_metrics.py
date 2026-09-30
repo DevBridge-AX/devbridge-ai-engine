@@ -87,6 +87,7 @@ class TestNonGroundablePath:
         assert record["session_id_hash"] == expected_hash
         assert record["is_groundable"] is False
         assert record["grounding_stage"] == "threshold"
+        assert record["grounding_fallback_reason"] is None
         assert record["chunk_count"] == 0
         assert record["top_similarity"] == 0.0
         assert record["turn"] == 1
@@ -150,6 +151,7 @@ class TestGroundablePath:
 
         assert record["is_groundable"] is True
         assert record["grounding_stage"] == "llm"
+        assert record["grounding_fallback_reason"] is None
         assert record["chunk_count"] == 1
         assert record["top_similarity"] == pytest.approx(0.8)
         assert record["ttft_ms"] is not None and record["ttft_ms"] >= 0
@@ -166,3 +168,54 @@ class TestGroundablePath:
         assert "하세요" not in raw
         assert request.content not in raw
         assert request.user_id not in raw
+
+
+class TestGroundingFallbackPath:
+
+    def test_grounding_stage_llm_fallback_recorded(self, monkeypatch, metrics_tmp_dir):
+        """grounding.assess()가 fallback_reason을 세팅하면 grounding_stage="llm_fallback"으로 기록된다."""
+        chunk = RetrievedChunk(
+            chunk_id=1,
+            source_type="document",
+            source_id="doc-1",
+            title="제목",
+            content="내용",
+            similarity_score=0.8,
+        )
+
+        async def fake_retrieve(query, workspace_id, db, top_k=5, access=None, timer=None):
+            return [chunk]
+
+        async def fake_assess(chunks, query):
+            # call_grounding 호출 예외로 유사도 fallback이 적용된 경우를 재현
+            return GroundingResult(
+                is_groundable=True,
+                confidence=0.8,
+                llm_usage=None,
+                fallback_reason="llm_error",
+            )
+
+        async def fake_stream(messages, system_prompt):
+            yield "안녕", None
+            yield None, LLMUsage(model="claude-main", prompt_tokens=100, completion_tokens=20)
+
+        monkeypatch.setattr(chat_pipeline.retriever, "retrieve", fake_retrieve)
+        monkeypatch.setattr(chat_pipeline.grounding, "assess", fake_assess)
+        monkeypatch.setattr(chat_pipeline.llm, "call_main_stream", fake_stream)
+
+        request = _request(session_id="session-fallback")
+        events = _run(request)
+
+        assert events[-1].event == "done"
+        assert events[-1].data["is_groundable"] is True
+        # done payload에는 grounding_stage/fallback_reason이 노출되지 않는다
+        assert "grounding_stage" not in events[-1].data
+        assert "fallback_reason" not in events[-1].data
+
+        records = _read_records(metrics_tmp_dir)
+        assert len(records) == 1
+        record = records[0]
+
+        assert record["grounding_stage"] == "llm_fallback"
+        assert record["grounding_fallback_reason"] == "llm_error"
+        assert record["is_groundable"] is True

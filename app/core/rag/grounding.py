@@ -11,7 +11,12 @@
   이 모듈은 is_groundable/confidence 값을 산출하여 반환만 합니다.
 - suggested_owner_id: is_groundable=False일 때 유사도가 가장 높은 git_commit 청크의
   author_id(USERS.id UUID String)를 반환합니다. 해당 청크가 없으면 None.
-- 2차 판정 토큰(llm_usage)은 chat_pipeline에서 rewrite usage에 합산됩니다.
+- 2차 판정 토큰(llm_usage)은 chat_pipeline에서 rewrite usage와 별도인
+  token_usage.grounding 필드로 전달됩니다 (rewrite usage에 합산되지 않음).
+- fallback_reason: 2차 판정이 유사도 fallback으로 처리된 사유를 남깁니다.
+  "llm_error"(call_grounding 호출 자체가 예외 발생) / "parse_error"(응답은 받았으나
+  JSON 파싱 실패·필수 키 누락) / None(fallback 없이 정상 판정). is_groundable/
+  confidence 값 자체는 오늘과 동일하게 fail-open(유사도 fallback)을 유지합니다.
 """
 
 import logging
@@ -31,6 +36,8 @@ class GroundingResult:
     confidence: float
     suggested_owner_id: str | None = field(default=None)
     llm_usage: LLMUsage | None = field(default=None)  # 2차 판정 시 GROUNDING_MODEL 사용량
+    # 유사도 fallback 적용 사유. "llm_error" | "parse_error" | None(정상 판정)
+    fallback_reason: str | None = field(default=None)
 
 
 async def assess(
@@ -63,6 +70,7 @@ async def assess(
             is_groundable=True,
             confidence=best_score,
             suggested_owner_id=None,
+            fallback_reason="llm_error",
         )
 
     is_groundable = raw.get("is_groundable")
@@ -75,6 +83,7 @@ async def assess(
             confidence=best_score,
             suggested_owner_id=None,
             llm_usage=usage,
+            fallback_reason="parse_error",
         )
 
     is_groundable = bool(is_groundable)

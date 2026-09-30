@@ -150,6 +150,36 @@ class TestCallGroundingMalformed:
         assert usage.completion_tokens == 0
 
 
+class TestCallGroundingThinkingWarning:
+
+    async def test_call_grounding_warns_on_max_tokens_finish(self, mock_gemini, caplog):
+        """finishReason=MAX_TOKENS(thinking 모델 truncate) 시 경고 로그가 남아야 합니다."""
+        response = {
+            "candidates": [
+                {"content": {"parts": []}, "finishReason": "MAX_TOKENS"},
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 120,
+                "candidatesTokenCount": 0,
+                "thoughtsTokenCount": 64,
+            },
+        }
+        mock_gemini(lambda req: httpx.Response(200, json=response))
+
+        with caplog.at_level("WARNING", logger="app.core.llm.provider"):
+            result, usage = await call_grounding("p")
+
+        assert result == {}
+        assert usage.prompt_tokens == 120
+        assert any(
+            "thinking/truncation" in record.message
+            and f"model={_MODEL}" in record.message
+            and "finish=MAX_TOKENS" in record.message
+            and "thoughts=64" in record.message
+            for record in caplog.records
+        )
+
+
 class TestCallGroundingHttpError:
 
     @pytest.mark.parametrize("status", [400, 401, 429, 500, 503])

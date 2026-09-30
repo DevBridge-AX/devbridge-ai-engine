@@ -2,7 +2,7 @@
 app/core/rag/grounding.py 유닛 테스트.
 
 provider.call_grounding을 모킹하여 LLM 호출 없이 검증합니다.
-임계치는 config.grounding_similarity_threshold(기본값 0.4)를 사용합니다.
+임계치는 config.grounding_similarity_threshold(기본값 0.35)를 사용합니다.
 """
 
 import pytest
@@ -148,3 +148,32 @@ async def test_grounding_result_llm_usage_default_none():
     result = GroundingResult(is_groundable=True, confidence=0.95)
     assert result.suggested_owner_id is None
     assert result.llm_usage is None
+    assert result.fallback_reason is None
+
+
+async def test_llm_exception_sets_fallback_reason_llm_error():
+    """call_grounding 호출이 예외를 던지면 fallback_reason="llm_error"로 유사도 fallback 적용."""
+    chunks = [_make_chunk(1, "document", _THRESHOLD + 0.1)]
+
+    with patch("app.core.rag.grounding.llm.call_grounding", new_callable=AsyncMock) as mock_llm:
+        mock_llm.side_effect = RuntimeError("gms unreachable")
+        result = await assess(chunks, "질문")
+
+    assert result.is_groundable is True
+    assert result.confidence == pytest.approx(_THRESHOLD + 0.1)
+    assert result.llm_usage is None
+    assert result.fallback_reason == "llm_error"
+
+
+async def test_parse_failure_sets_fallback_reason_parse_error():
+    """call_grounding이 빈 dict({})를 반환하면 fallback_reason="parse_error"로 유사도 fallback 적용."""
+    chunks = [_make_chunk(1, "document", _THRESHOLD + 0.1)]
+
+    with patch("app.core.rag.grounding.llm.call_grounding", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = ({}, _MOCK_USAGE)
+        result = await assess(chunks, "질문")
+
+    assert result.is_groundable is True
+    assert result.confidence == pytest.approx(_THRESHOLD + 0.1)
+    assert result.llm_usage == _MOCK_USAGE
+    assert result.fallback_reason == "parse_error"
