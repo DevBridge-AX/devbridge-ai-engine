@@ -14,6 +14,12 @@ from app.core import metrics
 
 class TestStageTimer:
 
+    def test_set_field_stores_generic_value(self):
+        timer = metrics.StageTimer()
+        timer.set_field("acl_refetch_count", 1)
+        assert timer.fields == {"acl_refetch_count": 1}
+        assert timer.stages == {}
+
     def test_start_stop_records_nonnegative_ms(self):
         timer = metrics.StageTimer()
         timer.start("stage_a")

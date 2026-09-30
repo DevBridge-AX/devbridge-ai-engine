@@ -29,6 +29,7 @@ class StageTimer:
     def __init__(self) -> None:
         self._starts: dict[str, float] = {}
         self.stages: dict[str, float] = {}
+        self.fields: dict[str, object] = {}
 
     def start(self, name: str) -> None:
         """name 구간의 시작 시각을 기록합니다."""
@@ -46,6 +47,10 @@ class StageTimer:
         elapsed_ms = (time.perf_counter() - started) * 1000
         self.stages[name] = elapsed_ms
         return elapsed_ms
+
+    def set_field(self, name: str, value: object) -> None:
+        """ms 구간이 아닌 부가 계측값(카운트 등)을 기록합니다."""
+        self.fields[name] = value
 
     @contextmanager
     def measure(self, name: str):

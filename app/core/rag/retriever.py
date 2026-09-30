@@ -18,7 +18,10 @@ RRF 병합 전에 document_chunks의 task_id/sensitivity_level 스냅샷으로 �
 병합 후에 거르면 최종 결과가 top_k보다 줄어들기 때문입니다.
 
 관측성: timer(app.core.metrics.StageTimer)가 주어지면 embed_ms/bm25_ms/vector_ms/
-acl_filter_ms 구간을 기록합니다. 미전달 시(None) 기존 동작과 동일합니다.
+acl_filter_ms 구간과 acl_refetch_count(0/1) 필드를 기록합니다. 미전달 시(None) 기존 동작과 동일합니다.
+
+ACL 재조회: 필터 후 결과가 top_k 미만이고 필터 전 후보 페이지가 가득 찼다면(더 있을 수 있음)
+overfetch 배수를 2배(상한 12)로 늘려 1회만 재검색합니다. 쿼리 임베딩은 재사용합니다.
 """
 
 import asyncio
@@ -42,6 +45,8 @@ from app.db.models import (
 from app.db.vector_store import get_vector_store
 
 _OVERFETCH_FACTOR = 3
+_OVERFETCH_MAX_FACTOR = 12
+_ACL_MAX_REFETCH = 1
 _RRF_K = 60
 
 
@@ -91,28 +96,52 @@ async def retrieve(
     if not settings.bm25_enabled:
         return await _vector_only_retrieve(query, workspace_id, db, top_k, access, timer)
 
-    overfetch_k = top_k * _OVERFETCH_FACTOR
+    factor = _OVERFETCH_FACTOR
+    overfetch_k = top_k * factor
+    restricted = access is not None and not access.is_unrestricted
 
     embed_task = asyncio.create_task(_get_query_embedding(query, timer))
-    bm25_results = _search_bm25_sync(query, workspace_id, db, overfetch_k, timer)
+    bm25_raw = _search_bm25_sync(query, workspace_id, db, overfetch_k, timer)
     query_embedding = await embed_task
 
-    with timer.measure("vector_ms") if timer else nullcontext():
-        vector_results = get_vector_store().search(
-            query_embedding, workspace_id=workspace_id, top_k=overfetch_k
-        )
-
-    if access is not None and not access.is_unrestricted:
-        with timer.measure("acl_filter_ms") if timer else nullcontext():
-            allowed = _allowed_chunk_ids(
-                {r["chunk_id"] for r in vector_results} | {r.chunk_id for r in bm25_results},
-                access,
-                db,
+    refetch_count = 0
+    while True:
+        with timer.measure("vector_ms") if timer else nullcontext():
+            vector_raw = get_vector_store().search(
+                query_embedding, workspace_id=workspace_id, top_k=overfetch_k
             )
-            vector_results = [r for r in vector_results if r["chunk_id"] in allowed]
-            bm25_results = [r for r in bm25_results if r.chunk_id in allowed]
 
-    merged = _rrf_merge(vector_results, bm25_results, top_k)
+        vector_results, bm25_results = vector_raw, bm25_raw
+        if restricted:
+            with timer.measure("acl_filter_ms") if timer else nullcontext():
+                allowed = _allowed_chunk_ids(
+                    {r["chunk_id"] for r in vector_raw} | {r.chunk_id for r in bm25_raw},
+                    access,
+                    db,
+                )
+                vector_results = [r for r in vector_raw if r["chunk_id"] in allowed]
+                bm25_results = [r for r in bm25_raw if r.chunk_id in allowed]
+
+        merged = _rrf_merge(vector_results, bm25_results, top_k)
+
+        candidates_full = len(vector_raw) >= overfetch_k or len(bm25_raw) >= overfetch_k
+        next_factor = min(factor * 2, _OVERFETCH_MAX_FACTOR)
+        if not (
+            restricted
+            and len(merged) < top_k
+            and candidates_full
+            and refetch_count < _ACL_MAX_REFETCH
+            and next_factor > factor
+        ):
+            break
+        refetch_count += 1
+        factor = next_factor
+        overfetch_k = top_k * factor
+        bm25_raw = _search_bm25_sync(query, workspace_id, db, overfetch_k, timer)
+
+    if timer:
+        timer.set_field("acl_refetch_count", refetch_count)
+
     if not merged:
         return []
 
@@ -133,16 +162,34 @@ async def _vector_only_retrieve(
     query_embedding = embed_result.embeddings[0]
 
     restricted = access is not None and not access.is_unrestricted
-    with timer.measure("vector_ms") if timer else nullcontext():
-        raw_results = get_vector_store().search(
-            query_embedding,
-            workspace_id=workspace_id,
-            top_k=top_k * _OVERFETCH_FACTOR if restricted else top_k,
-        )
-    if restricted:
-        with timer.measure("acl_filter_ms") if timer else nullcontext():
-            allowed = _allowed_chunk_ids({r["chunk_id"] for r in raw_results}, access, db)
-            raw_results = [r for r in raw_results if r["chunk_id"] in allowed][:top_k]
+    factor = _OVERFETCH_FACTOR
+    refetch_count = 0
+    while True:
+        fetch_k = top_k * factor if restricted else top_k
+        with timer.measure("vector_ms") if timer else nullcontext():
+            vector_raw = get_vector_store().search(
+                query_embedding, workspace_id=workspace_id, top_k=fetch_k
+            )
+        raw_results = vector_raw
+        if restricted:
+            with timer.measure("acl_filter_ms") if timer else nullcontext():
+                allowed = _allowed_chunk_ids({r["chunk_id"] for r in vector_raw}, access, db)
+                raw_results = [r for r in vector_raw if r["chunk_id"] in allowed][:top_k]
+
+        next_factor = min(factor * 2, _OVERFETCH_MAX_FACTOR)
+        if not (
+            restricted
+            and len(raw_results) < top_k
+            and len(vector_raw) >= fetch_k
+            and refetch_count < _ACL_MAX_REFETCH
+            and next_factor > factor
+        ):
+            break
+        refetch_count += 1
+        factor = next_factor
+
+    if timer:
+        timer.set_field("acl_refetch_count", refetch_count)
     if not raw_results:
         return []
 

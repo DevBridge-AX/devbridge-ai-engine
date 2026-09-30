@@ -119,3 +119,123 @@ class TestRetrieveWithAccess:
     def test_default_access_hides_restricted_only(self, db):
         result = asyncio.run(retriever.retrieve("q", "ws", db, top_k=5, access=AccessFilter()))
         assert {c.chunk_id for c in result} == {1, 2, 3}
+
+
+class TestAclRefetch:
+    """필터 후 top_k 미달 + 후보 페이지가 가득 찬 경우에만 1회 재조회한다."""
+
+    TOP_K = 5
+
+    def _setup(self, monkeypatch, n_chunks, restricted_ids, bm25_enabled):
+        """n_chunks개 청크(id 1..n, 낮은 id가 상위 랭크)의 DB와 호출 기록용 검색 mock을 만든다."""
+        engine = create_engine("sqlite://")
+        DocumentChunk.__table__.create(engine)
+        session = Session(engine)
+        for cid in range(1, n_chunks + 1):
+            session.add(
+                DocumentChunk(
+                    id=cid,
+                    workspace_id="ws",
+                    source_type=ChunkSourceType.DOCUMENT,
+                    source_id=f"doc-{cid}",
+                    content=f"content {cid}",
+                    embedding_model="fake",
+                    embedding_model_version="v0",
+                    vector_id=f"v{cid}",
+                    sensitivity_level="restricted" if cid in restricted_ids else "normal",
+                )
+            )
+        session.commit()
+
+        hits = [{"chunk_id": cid, "score": 1.0 - cid * 0.001} for cid in range(1, n_chunks + 1)]
+        bm25_hits = [BM25SearchResult(chunk_id=cid, bm25_rank=cid - 1) for cid in range(1, n_chunks + 1)]
+        calls = {"vector": [], "bm25": [], "embed": 0}
+
+        async def fake_embed(texts):
+            calls["embed"] += 1
+            return SimpleNamespace(embeddings=[[0.0]])
+
+        def vec_search(emb, workspace_id, top_k):
+            calls["vector"].append(top_k)
+            return hits[:top_k]
+
+        def bm25_search(q, ws, db, k):
+            calls["bm25"].append(k)
+            return bm25_hits[:k]
+
+        monkeypatch.setattr(retriever, "embed_texts", fake_embed)
+        monkeypatch.setattr(
+            retriever, "get_settings", lambda: SimpleNamespace(bm25_enabled=bm25_enabled)
+        )
+        monkeypatch.setattr(retriever, "get_vector_store", lambda: SimpleNamespace(search=vec_search))
+        monkeypatch.setattr(retriever, "get_bm25_manager", lambda: SimpleNamespace(search=bm25_search))
+        monkeypatch.setattr(
+            retriever, "_resolve_title_and_author", lambda chunk, db: (f"t{chunk.id}", None)
+        )
+        return session, calls
+
+    @pytest.mark.parametrize("bm25_enabled", [True, False])
+    def test_refetch_fills_top_k(self, monkeypatch, bm25_enabled):
+        from app.core.metrics import StageTimer
+
+        # 상위 15건(=3배)은 전부 restricted, 이후 15건은 normal
+        db, calls = self._setup(monkeypatch, 30, set(range(1, 16)), bm25_enabled)
+        timer = StageTimer()
+        result = asyncio.run(
+            retriever.retrieve("q", "ws", db, top_k=self.TOP_K, access=AccessFilter(), timer=timer)
+        )
+        assert len(result) == self.TOP_K
+        assert all(c.chunk_id > 15 for c in result)
+        assert calls["vector"] == [15, 30]
+        if bm25_enabled:
+            assert calls["bm25"] == [15, 30]
+        assert calls["embed"] == 1  # 임베딩 재사용
+        assert timer.fields["acl_refetch_count"] == 1
+
+    @pytest.mark.parametrize("bm25_enabled", [True, False])
+    def test_no_refetch_when_candidates_not_full(self, monkeypatch, bm25_enabled):
+        from app.core.metrics import StageTimer
+
+        # 워크스페이스에 10건뿐(<15): 후보 페이지가 차지 않아 소진된 것으로 본다
+        db, calls = self._setup(monkeypatch, 10, set(range(1, 9)), bm25_enabled)
+        timer = StageTimer()
+        result = asyncio.run(
+            retriever.retrieve("q", "ws", db, top_k=self.TOP_K, access=AccessFilter(), timer=timer)
+        )
+        assert len(result) == 2
+        assert len(calls["vector"]) == 1
+        assert len(calls["bm25"]) == (1 if bm25_enabled else 0)
+        assert timer.fields["acl_refetch_count"] == 0
+
+    @pytest.mark.parametrize("bm25_enabled", [True, False])
+    def test_no_refetch_without_access(self, monkeypatch, bm25_enabled):
+        db, calls = self._setup(monkeypatch, 30, set(range(1, 16)), bm25_enabled)
+        asyncio.run(retriever.retrieve("q", "ws", db, top_k=self.TOP_K))
+        assert len(calls["vector"]) == 1
+
+    @pytest.mark.parametrize("bm25_enabled", [True, False])
+    def test_no_refetch_when_top_k_already_filled(self, monkeypatch, bm25_enabled):
+        db, calls = self._setup(monkeypatch, 30, {1}, bm25_enabled)
+        result = asyncio.run(
+            retriever.retrieve("q", "ws", db, top_k=self.TOP_K, access=AccessFilter())
+        )
+        assert len(result) == self.TOP_K
+        assert len(calls["vector"]) == 1
+
+    @pytest.mark.parametrize("bm25_enabled", [True, False])
+    def test_factor_never_exceeds_cap(self, monkeypatch, bm25_enabled):
+        # 재조회 횟수 상한을 풀어도 배수는 12를 넘지 않는다 (3 -> 6 -> 12 -> 중단)
+        monkeypatch.setattr(retriever, "_ACL_MAX_REFETCH", 10)
+        db, calls = self._setup(monkeypatch, 100, set(range(1, 101)), bm25_enabled)
+        result = asyncio.run(
+            retriever.retrieve("q", "ws", db, top_k=self.TOP_K, access=AccessFilter())
+        )
+        assert result == []
+        assert calls["vector"] == [15, 30, 60]
+        assert max(calls["vector"]) == self.TOP_K * retriever._OVERFETCH_MAX_FACTOR
+
+    @pytest.mark.parametrize("bm25_enabled", [True, False])
+    def test_default_refetch_limited_to_once(self, monkeypatch, bm25_enabled):
+        db, calls = self._setup(monkeypatch, 100, set(range(1, 101)), bm25_enabled)
+        asyncio.run(retriever.retrieve("q", "ws", db, top_k=self.TOP_K, access=AccessFilter()))
+        assert calls["vector"] == [15, 30]
