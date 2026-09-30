@@ -486,7 +486,7 @@ async def _collect_records(
     if limit is not None:
         cases = cases[:limit]
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         tmp_path = Path(tmp)
         vector_store_path = tmp_path / "vector_store"
         metrics_dir = tmp_path / "metrics"
