@@ -8,12 +8,16 @@
 
 from __future__ import annotations
 
+import logging
+
 from app.config import get_settings
 from app.core.llm.provider import call_structured
 from app.schemas.workspace_summary import (
     WorkspaceSummaryRequest,
     WorkspaceSummaryResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 
 async def generate_workspace_summary(
@@ -24,7 +28,17 @@ async def generate_workspace_summary(
     mode = settings.ai_analysis_mode.lower().strip()
 
     if mode == "llm" and settings.gms_api_key:
-        return await _llm_summary(request, settings)
+        try:
+            return await _llm_summary(request, settings)
+        except Exception:
+            logger.warning(
+                "workspace_summary: LLM 요약 실패. fallback 결과로 대체합니다. "
+                "workspace_id=%s",
+                request.workspace_id,
+                exc_info=True,
+            )
+            return _fallback_summary(request, settings, mode="llm_fallback")
+
     return _fallback_summary(request, settings)
 
 
@@ -91,15 +105,21 @@ Rules:
 def _fallback_summary(
     request: WorkspaceSummaryRequest,
     settings,
+    mode: str = "fallback",
 ) -> WorkspaceSummaryResponse:
-    """메트릭 기반 규칙 템플릿으로 한글 요약을 생성합니다."""
+    """메트릭 기반 규칙 템플릿으로 한글 요약을 생성합니다.
+
+    mode: 정상 fallback 모드는 "fallback", LLM 호출 실패로 인한 대체는
+    "llm_fallback"으로 구분해 표시합니다(Spring DocumentAnalysisResponse.mode와
+    동일하게 자유 문자열이며 값에 따라 분기하지 않는 것을 확인했습니다).
+    """
     summary = _build_fallback_summary(request)
 
     return WorkspaceSummaryResponse(
         workspace_id=request.workspace_id,
         summary=summary,
         model=settings.document_analysis_model,
-        mode="fallback",
+        mode=mode,
     )
 
 
