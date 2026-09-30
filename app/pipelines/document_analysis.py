@@ -176,6 +176,7 @@ Document preview:
         messages=[{"role": "user", "content": user_prompt}],
         system_prompt=system_prompt,
         max_tokens=1200,
+        purpose="document_analysis",
     )
 
     summary = _clean_required_text(result.get("summary"))

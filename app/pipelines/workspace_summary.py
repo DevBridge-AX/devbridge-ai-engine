@@ -73,6 +73,7 @@ Rules:
         messages=[{"role": "user", "content": metrics_text}],
         system_prompt=system_prompt,
         max_tokens=800,
+        purpose="workspace_summary",
     )
 
     summary = str(result.get("summary", "")).strip()

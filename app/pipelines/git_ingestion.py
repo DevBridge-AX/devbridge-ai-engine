@@ -500,6 +500,7 @@ Commit diff preview:
         messages=[{"role": "user", "content": user_prompt}],
         system_prompt=system_prompt,
         max_tokens=1000,
+        purpose="commit_analysis",
     )
 
     return {
