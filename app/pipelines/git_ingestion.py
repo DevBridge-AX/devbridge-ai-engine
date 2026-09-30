@@ -570,19 +570,29 @@ Commit diff preview:
 
     return {
         "summary": _clean_text(result.get("summary")) or _fallback_summary(commit),
-        "impact_area": _clean_text(result.get("impact_area")) or _guess_impact_area(commit_text),
+        "impact_area": _clean_text(result.get("impact_area")) or _guess_impact_area(_heuristic_text(commit)),
         "risk_level": _normalize_risk_level(result.get("risk_level")),
         "next_action": _clean_text(result.get("next_action")) or "Review the commit and verify related tests or build checks.",
     }
 
 
 def _fallback_analyze_commit(commit: CommitData, commit_text: str) -> dict:
+    heuristic_text = _heuristic_text(commit)
     return {
         "summary": _fallback_summary(commit),
-        "impact_area": _guess_impact_area(commit_text),
-        "risk_level": _estimate_risk_level(commit_text),
-        "next_action": _fallback_next_action(commit_text),
+        "impact_area": _guess_impact_area(heuristic_text),
+        "risk_level": _estimate_risk_level(heuristic_text),
+        "next_action": _fallback_next_action(heuristic_text),
     }
+
+
+def _heuristic_text(commit: CommitData) -> str:
+    """키워드 휴리스틱 입력. commit_text의 메타데이터 헤더(author_name 등)는 제외한다.
+
+    헤더의 "author"가 security 키워드 "auth"에 매칭되어 모든 커밋이 security로
+    분류되던 문제를 막기 위해 커밋 메시지와 diff만 사용한다.
+    """
+    return f"{commit.message or ''}\n{_build_diff_text(commit)}"
 
 
 def _fallback_summary(commit: CommitData) -> str:
