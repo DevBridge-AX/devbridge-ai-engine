@@ -86,7 +86,12 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
     with timer.measure("grounding_ms"):
         grounding_result = await grounding.assess(chunks, request.content)
     grounding_usage = grounding_result.llm_usage
-    grounding_stage = "llm" if grounding_usage is not None else "threshold"
+    if grounding_result.fallback_reason is not None:
+        grounding_stage = "llm_fallback"
+    elif grounding_usage is not None:
+        grounding_stage = "llm"
+    else:
+        grounding_stage = "threshold"
 
     citations = _build_citations(chunks)
     top_similarity = max((c.similarity_score for c in chunks), default=0.0)
@@ -225,6 +230,7 @@ def _record_chat_metric(
         "is_groundable": grounding_result.is_groundable,
         "confidence": grounding_result.confidence,
         "grounding_stage": grounding_stage,
+        "grounding_fallback_reason": grounding_result.fallback_reason,
         "access_filtered": access_filtered,
         "acl_refetch_count": timer.fields.get("acl_refetch_count"),
         "main_model": token_usage.main.model,
