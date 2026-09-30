@@ -1,0 +1,40 @@
+{"id": "p001", "kind": "same_intent", "q1": "Access Token 만료 시간이 얼마야?", "q2": "액세스 토큰은 몇 분 지나면 만료돼?", "note": "동일 속성(Access Token 만료 시간, 30분)을 영문/한글 표기와 어휘만 바꿔 질문."}
+{"id": "p002", "kind": "same_intent", "q1": "JWT 서명 알고리즘은 뭘 써?", "q2": "토큰 서명에 쓰는 알고리즘이 어떻게 되나요?", "note": "동일 사실(RS256)을 반말/존댓말, JWT/토큰 표현만 바꿔 질문."}
+{"id": "p003", "kind": "same_intent", "q1": "개인키 로테이션 주기 알려줘", "q2": "서명 키는 얼마마다 교체하나요?", "note": "로테이션과 교체는 동의어. 둘 다 90일 주기를 묻는다."}
+{"id": "p004", "kind": "same_intent", "q1": "로그아웃하면 Refresh Token은 어떻게 처리돼?", "q2": "로그아웃 시 리프레시 토큰 무효화 방식이 궁금합니다", "note": "동일 주제(로그아웃 시 Refresh Token 블랙리스트 등록)를 문형만 바꿔 질문."}
+{"id": "p005", "kind": "same_intent", "q1": "JWT 클레임에 어떤 항목이 들어가?", "q2": "토큰 payload 구성이 어떻게 돼요?", "note": "클레임과 payload는 같은 대상. sub/role/workspace_ids/iat/exp를 묻는다."}
+{"id": "p006", "kind": "same_intent", "q1": "배포 절차 알려줘", "q2": "운영 배포는 어떤 순서로 해?", "note": "절차와 순서는 같은 의도. 축약형과 풀어쓴 문장의 차이."}
+{"id": "p007", "kind": "same_intent", "q1": "배포 가능한 요일과 시간이 언제야?", "q2": "언제 배포할 수 있나요? 요일이랑 시간 알려주세요", "note": "화/목 15:00 배포 가능 시간을 어순과 존댓말만 바꿔 질문."}
+{"id": "p008", "kind": "same_intent", "q1": "배포 승인은 누가 해?", "q2": "배포 승인자가 누구인가요", "note": "인프라팀장을 묻는 동일 질문. 동사형과 명사형 차이."}
+{"id": "p009", "kind": "same_intent", "q1": "배포 후에 뭘 확인해야 해?", "q2": "배포 끝나고 확인 절차가 어떻게 돼?", "note": "배포 후 확인 절차(health, 에러율, 모니터링)를 구어체 변형으로 질문."}
+{"id": "p010", "kind": "same_intent", "q1": "배포 명령어 알려줘", "q2": "배포 스크립트 실행 명령어가 뭐예요?", "note": "deploy.sh 실행 명령어를 묻는 동일 의도. 명령어/스크립트 실행 표현 차이."}
+{"id": "p011", "kind": "same_intent", "q1": "장애 났을 때 온콜 담당자는 몇 분 안에 대응해야 해?", "q2": "온콜 초기 대응 SLA가 어떻게 돼?", "note": "15분 SLA를 풀어쓴 문장과 축약 용어(SLA)로 질문."}
+{"id": "p012", "kind": "same_intent", "q1": "롤백 명령어 알려줘", "q2": "이전 버전으로 되돌리는 kubectl 명령이 뭐야?", "note": "kubectl rollout undo를 묻는 동일 의도. 롤백을 풀어 표현."}
+{"id": "p013", "kind": "same_intent", "q1": "장애 에스컬레이션 기준이 뭐야?", "q2": "장애가 안 풀리면 언제 누구한테 올려?", "note": "15분/30분 에스컬레이션 기준을 구어체로 바꿔 질문."}
+{"id": "p014", "kind": "same_intent", "q1": "포스트모템은 언제까지 써야 해?", "q2": "장애 사후 보고서 작성 기한이 어떻게 되나요", "note": "포스트모템과 사후 보고서는 같은 대상. 24시간 기한을 묻는다."}
+{"id": "p015", "kind": "same_intent", "q1": "DB 커넥션 풀 고갈되면 어떻게 해?", "q2": "커넥션 풀이 바닥났을 때 대처법 알려줘", "note": "고갈과 바닥남은 같은 상황. 풀 사이즈/슬로우 쿼리 확인을 묻는다."}
+{"id": "p016", "kind": "same_intent", "q1": "결제 API는 어떤 게이트웨이랑 연동돼?", "q2": "결제 연동하는 외부 PG사가 어디야?", "note": "TossPayments를 묻는 동일 질문. 게이트웨이와 PG사는 같은 대상."}
+{"id": "p017", "kind": "same_intent", "q1": "결제 API 소스 코드 위치가 어디야?", "q2": "결제 API 코드는 어느 경로에 있어?", "note": "소스 경로를 묻는 동일 의도. 위치/경로 어휘 차이."}
+{"id": "p018", "kind": "same_intent", "q1": "결제 취소 엔드포인트 경로 알려줘", "q2": "결제를 취소하려면 어떤 API를 호출해?", "note": "POST /api/v1/payments/{id}/cancel을 묻는 동일 의도."}
+{"id": "p019", "kind": "same_intent", "q1": "결제 게이트웨이 타임아웃 몇 초야?", "q2": "TossPayments 호출 타임아웃 시간이 얼마지?", "note": "게이트웨이와 TossPayments는 같은 대상. 30초를 묻는다."}
+{"id": "p020", "kind": "same_intent", "q1": "결제 요청 시 멱등성은 어떻게 보장해?", "q2": "결제 중복 요청 방지용 Idempotency-Key 헤더는 어떻게 동작해?", "note": "멱등성 보장 방식(Idempotency-Key)을 서로 다른 표현으로 질문."}
+{"id": "p021", "kind": "different_intent", "q1": "Access Token 만료 시간은?", "q2": "Refresh Token 만료 시간은?", "note": "같은 속성이지만 대상이 다르다. 30분 vs 14일."}
+{"id": "p022", "kind": "different_intent", "q1": "JWT 서명 알고리즘은?", "q2": "JWT 서명 개인키 로테이션 주기는?", "note": "같은 대상(JWT 서명), 다른 속성. RS256 vs 90일."}
+{"id": "p023", "kind": "different_intent", "q1": "로그아웃 시 Refresh Token은 어떻게 처리돼?", "q2": "로그아웃 시 Access Token은 어떻게 처리돼?", "note": "대상만 다르다. 블랙리스트 즉시 무효화 vs 별도 폐기 없이 자연 만료."}
+{"id": "p024", "kind": "different_intent", "q1": "JWT 클레임에 포함되는 항목은?", "q2": "JWT 클레임에 포함하지 않는 정보는?", "note": "부정 대비. sub/role 등 vs 비밀번호/이메일 등 민감 정보."}
+{"id": "p025", "kind": "different_intent", "q1": "Access Token이 만료되면 어떻게 재발급해?", "q2": "Access Token 만료 시간은 얼마야?", "note": "절차(refresh 엔드포인트 호출) vs 수치(30분). 주제어는 동일."}
+{"id": "p026", "kind": "different_intent", "q1": "배포 명령어 알려줘", "q2": "롤백 명령어 알려줘", "note": "문장 구조가 동일하지만 deploy.sh vs kubectl rollout undo로 답이 다르다."}
+{"id": "p027", "kind": "different_intent", "q1": "배포 가능한 시간은?", "q2": "배포 승인자는 누구야?", "note": "같은 배포 주제의 다른 속성. 화/목 15시 vs 인프라팀장."}
+{"id": "p028", "kind": "different_intent", "q1": "배포 후 에러율은 몇 % 미만이어야 해?", "q2": "배포 후 신규 슬롯은 몇 분간 모니터링해?", "note": "수치 질문이지만 속성이 다르다. 5xx 0.5% vs 10분."}
+{"id": "p029", "kind": "different_intent", "q1": "deploy.sh의 --tag에는 무엇을 지정해야 해?", "q2": "deploy.sh의 --tag에 지정하면 안 되는 값은?", "note": "부정 대비. 릴리스 커밋 해시 vs latest/브랜치명."}
+{"id": "p030", "kind": "different_intent", "q1": "온콜 담당자는 몇 분 안에 초기 대응을 시작해야 해?", "q2": "장애 포스트모템은 몇 시간 안에 작성해야 해?", "note": "둘 다 장애 후 시간 제한이지만 15분 vs 24시간으로 답이 다르다."}
+{"id": "p031", "kind": "different_intent", "q1": "15분 내 장애가 해소되지 않으면 누구에게 에스컬레이션해?", "q2": "30분 내에도 해소되지 않으면 누구에게 알려?", "note": "단계가 다르다. 팀 리드 vs 인프라팀장 및 서비스 오너 전체."}
+{"id": "p032", "kind": "different_intent", "q1": "롤백 명령어는?", "q2": "롤백 후 정상 기동 확인 명령어는?", "note": "kubectl rollout undo vs kubectl rollout status. 명령어 두 개가 다르다."}
+{"id": "p033", "kind": "different_intent", "q1": "결제 게이트웨이 타임아웃은 몇 초야?", "q2": "결제 게이트웨이 호출 재시도는 몇 번까지 해?", "note": "수치 질문의 속성이 다르다. 30초 vs 최대 2회."}
+{"id": "p034", "kind": "different_intent", "q1": "결제 상태 조회 엔드포인트는?", "q2": "결제 취소 엔드포인트는?", "note": "같은 형식의 질문, 다른 엔드포인트. GET /payments/{id} vs POST /payments/{id}/cancel."}
+{"id": "p035", "kind": "different_intent", "q1": "결제 API 타임아웃 시 어떻게 재시도해?", "q2": "결제 API 재시도 후에도 실패하면 어떤 오류 코드를 반환해?", "note": "재시도 방식(지수 백오프 2회) vs 최종 오류 코드(PAYMENT_GATEWAY_TIMEOUT)."}
+{"id": "p036", "kind": "different_intent", "q1": "결제 API 소스 코드 경로는?", "q2": "결제 API에서 TossPayments 연동을 담당하는 클래스는?", "note": "디렉터리 경로 vs 클래스명(PaymentGatewayClient). 같은 소스 주제의 다른 속성."}
+{"id": "p037", "kind": "different_intent", "q1": "결제 요청 시 Idempotency-Key 헤더는 필수야?", "q2": "동일한 Idempotency-Key로 재요청하면 어떻게 돼?", "note": "필수 여부(예) vs 재요청 동작(기존 결제 결과 반환)으로 답이 다르다."}
+{"id": "p038", "kind": "different_intent", "q1": "결제 게이트웨이 타임아웃 장애가 나면 어떻게 대응해?", "q2": "DB 커넥션 풀 고갈 장애가 나면 어떻게 대응해?", "note": "같은 문형, 다른 장애 유형. TossPayments 상태 페이지 확인 vs 풀 사이즈/슬로우 쿼리 확인."}
+{"id": "p039", "kind": "different_intent", "q1": "배포 직후 5xx가 급증하면 어떻게 해?", "q2": "배포 후 5xx 비율은 몇 % 미만이어야 해?", "note": "절차(즉시 롤백) vs 수치(0.5%). 5xx와 배포 후라는 어휘가 공통."}
+{"id": "p040", "kind": "different_intent", "q1": "서명 키는 며칠 주기로 로테이션해?", "q2": "로테이션 후 이전 서명 키는 며칠간 유지돼?", "note": "수치의 대상이 다르다. 90일 주기 vs 14일 검증용 유지."}
