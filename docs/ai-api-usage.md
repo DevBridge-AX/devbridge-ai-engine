@@ -117,7 +117,7 @@ Gemini의 `responseSchema` (Structured Output)를 사용하여 JSON 형식을 �
 | 배치 크기 | 최대 100건/요청 (초과 시 자동 분할) |
 | 호출 시점 | 문서/Git/담당자답변 인덱싱 시, 채팅 검색 쿼리 임베딩 시 |
 
-**참고**: Gemini Embedding API는 응답에 토큰 수를 포함하지 않습니다. `usage_logs`에는 텍스트 1건당 0.2 토큰으로 고정 추정하여 누적합니다.
+**알려진 한계**: Gemini Embedding API는 응답에 실측 토큰 수(usageMetadata)를 포함하지 않습니다. `usage_logs.embedding_tokens`에 누적되는 값은 provider가 반환한 실 토큰 수가 아니라, 텍스트 건수 × `embedding_tokens_per_text`(기본 0.2, GMS 과금 단위 추정치)로 계산한 추정치입니다(`EmbedResult.token_source="estimate_per_text"`). `usage_logs` 테이블 스키마 자체는 변경되지 않습니다.
 
 ---
 
