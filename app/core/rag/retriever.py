@@ -16,9 +16,13 @@ BM25-only 히트는 similarity_score=0.0으로, grounding threshold에서 자연
 접근 제어(docs/access-control.md §6): access가 주어지면 overfetch된 벡터·BM25 후보를
 RRF 병합 전에 document_chunks의 task_id/sensitivity_level 스냅샷으로 사후 필터링합니다.
 병합 후에 거르면 최종 결과가 top_k보다 줄어들기 때문입니다.
+
+관측성: timer(app.core.metrics.StageTimer)가 주어지면 embed_ms/bm25_ms/vector_ms/
+acl_filter_ms 구간을 기록합니다. 미전달 시(None) 기존 동작과 동일합니다.
 """
 
 import asyncio
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 
 from sqlalchemy import or_, select
@@ -26,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.core.embeddings.embedder import embed_texts
+from app.core.metrics import StageTimer
 from app.core.rag.bm25_index import BM25SearchResult, get_bm25_manager
 from app.db.models import (
     ChunkSourceType,
@@ -73,35 +78,39 @@ async def retrieve(
     db: Session,
     top_k: int = 5,
     access: AccessFilter | None = None,
+    timer: StageTimer | None = None,
 ) -> list[RetrievedChunk]:
     """쿼리에 대한 관련 document_chunks를 유사도 순으로 반환합니다.
 
     bm25_enabled=True일 때 하이브리드 검색(BM25 + Vector, RRF 병합)을 수행합니다.
     access가 None이면 접근 제어 없이 검색합니다.
+    timer가 주어지면 embed_ms/bm25_ms/vector_ms/acl_filter_ms 구간을 기록합니다.
     """
     settings = get_settings()
 
     if not settings.bm25_enabled:
-        return await _vector_only_retrieve(query, workspace_id, db, top_k, access)
+        return await _vector_only_retrieve(query, workspace_id, db, top_k, access, timer)
 
     overfetch_k = top_k * _OVERFETCH_FACTOR
 
-    embed_task = asyncio.create_task(_get_query_embedding(query))
-    bm25_results = _search_bm25_sync(query, workspace_id, db, overfetch_k)
+    embed_task = asyncio.create_task(_get_query_embedding(query, timer))
+    bm25_results = _search_bm25_sync(query, workspace_id, db, overfetch_k, timer)
     query_embedding = await embed_task
 
-    vector_results = get_vector_store().search(
-        query_embedding, workspace_id=workspace_id, top_k=overfetch_k
-    )
+    with timer.measure("vector_ms") if timer else nullcontext():
+        vector_results = get_vector_store().search(
+            query_embedding, workspace_id=workspace_id, top_k=overfetch_k
+        )
 
     if access is not None and not access.is_unrestricted:
-        allowed = _allowed_chunk_ids(
-            {r["chunk_id"] for r in vector_results} | {r.chunk_id for r in bm25_results},
-            access,
-            db,
-        )
-        vector_results = [r for r in vector_results if r["chunk_id"] in allowed]
-        bm25_results = [r for r in bm25_results if r.chunk_id in allowed]
+        with timer.measure("acl_filter_ms") if timer else nullcontext():
+            allowed = _allowed_chunk_ids(
+                {r["chunk_id"] for r in vector_results} | {r.chunk_id for r in bm25_results},
+                access,
+                db,
+            )
+            vector_results = [r for r in vector_results if r["chunk_id"] in allowed]
+            bm25_results = [r for r in bm25_results if r.chunk_id in allowed]
 
     merged = _rrf_merge(vector_results, bm25_results, top_k)
     if not merged:
@@ -116,20 +125,24 @@ async def _vector_only_retrieve(
     db: Session,
     top_k: int,
     access: AccessFilter | None = None,
+    timer: StageTimer | None = None,
 ) -> list[RetrievedChunk]:
     """기존 vector-only 검색 경로."""
-    embed_result = await embed_texts([query])
+    with timer.measure("embed_ms") if timer else nullcontext():
+        embed_result = await embed_texts([query])
     query_embedding = embed_result.embeddings[0]
 
     restricted = access is not None and not access.is_unrestricted
-    raw_results = get_vector_store().search(
-        query_embedding,
-        workspace_id=workspace_id,
-        top_k=top_k * _OVERFETCH_FACTOR if restricted else top_k,
-    )
+    with timer.measure("vector_ms") if timer else nullcontext():
+        raw_results = get_vector_store().search(
+            query_embedding,
+            workspace_id=workspace_id,
+            top_k=top_k * _OVERFETCH_FACTOR if restricted else top_k,
+        )
     if restricted:
-        allowed = _allowed_chunk_ids({r["chunk_id"] for r in raw_results}, access, db)
-        raw_results = [r for r in raw_results if r["chunk_id"] in allowed][:top_k]
+        with timer.measure("acl_filter_ms") if timer else nullcontext():
+            allowed = _allowed_chunk_ids({r["chunk_id"] for r in raw_results}, access, db)
+            raw_results = [r for r in raw_results if r["chunk_id"] in allowed][:top_k]
     if not raw_results:
         return []
 
@@ -169,8 +182,9 @@ async def _vector_only_retrieve(
 # ---------------------------------------------------------------------------
 
 
-async def _get_query_embedding(query: str) -> list[float]:
-    embed_result = await embed_texts([query])
+async def _get_query_embedding(query: str, timer: StageTimer | None = None) -> list[float]:
+    with timer.measure("embed_ms") if timer else nullcontext():
+        embed_result = await embed_texts([query])
     return embed_result.embeddings[0]
 
 
@@ -179,8 +193,10 @@ def _search_bm25_sync(
     workspace_id: str,
     db: Session,
     top_k: int,
+    timer: StageTimer | None = None,
 ) -> list[BM25SearchResult]:
-    return get_bm25_manager().search(query, workspace_id, db, top_k)
+    with timer.measure("bm25_ms") if timer else nullcontext():
+        return get_bm25_manager().search(query, workspace_id, db, top_k)
 
 
 def _allowed_chunk_ids(
