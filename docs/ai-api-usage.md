@@ -260,7 +260,7 @@ DOCUMENT_ANALYSIS_MODEL=fallback-v1   # 문서 분석 표시용 모델명
   "token_usage": {
     "main":      {"model": "claude-sonnet-4-6",  "prompt_tokens": 512, "completion_tokens": 128},
     "rewrite":   {"model": "claude-haiku-4-5-20251001", "prompt_tokens": 80,  "completion_tokens": 20},
-    "grounding": {"model": "gemini-3.5-flash",   "prompt_tokens": 100, "completion_tokens": 10}
+    "grounding": {"model": "gemini-2.5-flash-lite", "prompt_tokens": 100, "completion_tokens": 10}
   }
 }
 ```
