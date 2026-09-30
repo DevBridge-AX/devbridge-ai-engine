@@ -57,7 +57,15 @@ async def ingest_git_commits(
 
     with SessionLocal() as db:
         try:
-            total_tokens, embedding_model, new_chunk_count, skipped_chunk_count, embed_ms = await _run(
+            (
+                total_tokens,
+                embedding_model,
+                new_chunk_count,
+                skipped_chunk_count,
+                embed_ms,
+                failed_commit_count,
+                failures,
+            ) = await _run(
                 db=db,
                 workspace_id=workspace_id,
                 source_id=source_id,
@@ -70,10 +78,18 @@ async def ingest_git_commits(
 
             db.commit()
 
+            if failed_commit_count == 0:
+                result, error_type = "COMPLETED", None
+            else:
+                all_failed = failed_commit_count >= len(commits)
+                result = "FAILED" if all_failed else "PARTIAL"
+                error_type = failures[0][1] if failures else None
+
             _record_git_ingestion_metric(
                 total_start, workspace_id, len(commits),
                 new_chunk_count=new_chunk_count, skipped_chunk_count=skipped_chunk_count,
-                embed_ms=embed_ms, result="COMPLETED", error_type=None,
+                embed_ms=embed_ms, result=result, error_type=error_type,
+                failed_commit_count=failed_commit_count,
             )
         except Exception as exc:
             logger.exception("git_ingestion failed: workspace_id=%s", workspace_id)
@@ -82,6 +98,7 @@ async def ingest_git_commits(
                 total_start, workspace_id, len(commits),
                 new_chunk_count=None, skipped_chunk_count=None, embed_ms=None,
                 result="FAILED", error_type=type(exc).__name__,
+                failed_commit_count=len(commits),
             )
 
 
@@ -91,7 +108,16 @@ async def _run(
     source_id: str | None,
     commits: list[CommitData],
     sensitivity_level: str = "normal",
-) -> tuple[int, str, int, int, float]:
+) -> tuple[int, str, int, int, float, int, list[tuple[int, str]]]:
+    """커밋 단위 부분 성공으로 인덱싱합니다.
+
+    커밋 1건 = SAVEPOINT 1개. 한 커밋이 실패하면 해당 SAVEPOINT만 롤백하고(GIT_COMMITS/
+    청크/분석 행 모두 남지 않음), 그 커밋이 벡터스토어에 이미 쓴 벡터는 삭제한 뒤 다음
+    커밋을 계속 처리합니다. 성공분은 호출자의 db.commit()으로 확정됩니다.
+
+    반환: (total_tokens, last_model, new_chunk_count, skipped_chunk_count, embed_ms,
+    failed_commit_count, failures[(commit_index, error_type)]).
+    """
     settings = get_settings()
     vector_store = get_vector_store()
 
@@ -100,34 +126,57 @@ async def _run(
     new_chunk_count = 0
     skipped_chunk_count = 0
     embed_ms_total = 0.0
+    failures: list[tuple[int, str]] = []
 
-    for commit in commits:
-        git_commit = await _get_or_create_git_commit(
-            db=db,
-            workspace_id=workspace_id,
-            source_id=source_id,
-            commit=commit,
-            settings=settings,
-        )
+    for index, commit in enumerate(commits):
+        added_vector_ids: list[str] = []
+        try:
+            with db.begin_nested():
+                git_commit = await _get_or_create_git_commit(
+                    db=db,
+                    workspace_id=workspace_id,
+                    source_id=source_id,
+                    commit=commit,
+                    settings=settings,
+                )
 
-        commit_text = _build_commit_text(commit)
+                commit_text = _build_commit_text(commit)
 
-        (
-            primary_vector_id,
-            embedding_tokens,
-            embedding_model,
-            commit_new_chunks,
-            commit_skipped_chunks,
-            commit_embed_ms,
-        ) = await _index_commit_if_needed(
-            db=db,
-            workspace_id=workspace_id,
-            git_commit=git_commit,
-            commit=commit,
-            commit_text=commit_text,
-            vector_store=vector_store,
-            sensitivity_level=sensitivity_level,
-        )
+                (
+                    primary_vector_id,
+                    embedding_tokens,
+                    embedding_model,
+                    commit_new_chunks,
+                    commit_skipped_chunks,
+                    commit_embed_ms,
+                ) = await _index_commit_if_needed(
+                    db=db,
+                    workspace_id=workspace_id,
+                    git_commit=git_commit,
+                    commit=commit,
+                    commit_text=commit_text,
+                    vector_store=vector_store,
+                    sensitivity_level=sensitivity_level,
+                    added_vector_ids=added_vector_ids,
+                )
+
+                analysis = await _analyze_commit(commit=commit, commit_text=commit_text)
+                _upsert_commit_analysis(
+                    db=db,
+                    workspace_id=workspace_id,
+                    git_commit=git_commit,
+                    analysis=analysis,
+                    vector_id=primary_vector_id,
+                )
+        except Exception as exc:
+            # 커밋 해시는 로그에만 남기고 메시지/diff 원문은 남기지 않는다.
+            logger.exception(
+                "git_ingestion: commit failed, savepoint rolled back. workspace_id=%s index=%d commit_hash=%s",
+                workspace_id, index, commit.commit_hash,
+            )
+            _cleanup_vectors(vector_store, workspace_id, added_vector_ids)
+            failures.append((index, type(exc).__name__))
+            continue
 
         total_tokens += embedding_tokens
         if embedding_model:
@@ -136,18 +185,25 @@ async def _run(
         skipped_chunk_count += commit_skipped_chunks
         embed_ms_total += commit_embed_ms
 
-        analysis = await _analyze_commit(commit=commit, commit_text=commit_text)
-        _upsert_commit_analysis(
-            db=db,
-            workspace_id=workspace_id,
-            git_commit=git_commit,
-            analysis=analysis,
-            vector_id=primary_vector_id,
-        )
+    if len(failures) < len(commits):
+        get_bm25_manager().invalidate(workspace_id)
 
-    get_bm25_manager().invalidate(workspace_id)
+    return (
+        total_tokens, last_model, new_chunk_count, skipped_chunk_count, embed_ms_total,
+        len(failures), failures,
+    )
 
-    return total_tokens, last_model, new_chunk_count, skipped_chunk_count, embed_ms_total
+
+def _cleanup_vectors(vector_store, workspace_id: str, vector_ids: list[str]) -> None:
+    """실패한 커밋이 벡터스토어에 남긴 벡터를 best-effort로 삭제합니다."""
+    for vector_id in vector_ids:
+        try:
+            vector_store.delete(vector_id, workspace_id)
+        except Exception:
+            logger.warning(
+                "git_ingestion: orphan vector cleanup failed. workspace_id=%s vector_id=%s",
+                workspace_id, vector_id, exc_info=True,
+            )
 
 
 def _record_git_ingestion_metric(
@@ -160,12 +216,14 @@ def _record_git_ingestion_metric(
     embed_ms: float | None,
     result: str,
     error_type: str | None,
+    failed_commit_count: int = 0,
 ) -> None:
     """Git 커밋 인덱싱 1건(배치)의 지표를 기록합니다. 커밋 메시지/diff는 포함하지 않습니다."""
     total_ms = (time.perf_counter() - total_start) * 1000
     payload = {
         "workspace_id": workspace_id,
         "commit_count": commit_count,
+        "failed_commit_count": failed_commit_count,
         "new_chunk_count": new_chunk_count,
         "skipped_chunk_count": skipped_chunk_count,
         "embed_ms": embed_ms,
@@ -251,6 +309,7 @@ async def _index_commit_if_needed(
     commit_text: str,
     vector_store,
     sensitivity_level: str = "normal",
+    added_vector_ids: list[str] | None = None,
 ) -> tuple[str | None, int, str | None, int, int, float]:
     """반환: (primary_vector_id, embedding_tokens, embedding_model, new_chunk_count, skipped_chunk_count, embed_ms)."""
     existing_chunks = db.execute(
@@ -309,6 +368,9 @@ async def _index_commit_if_needed(
     db.flush()
 
     for doc_chunk, embedding, vector_id in pending:
+        # add 도중 실패해도 upsert가 일부 반영됐을 수 있어 호출 전에 기록한다.
+        if added_vector_ids is not None:
+            added_vector_ids.append(vector_id)
         vector_store.add(
             vector_id=vector_id,
             chunk_id=doc_chunk.id,
