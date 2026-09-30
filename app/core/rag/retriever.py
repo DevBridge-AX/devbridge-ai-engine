@@ -84,25 +84,33 @@ async def retrieve(
     top_k: int = 5,
     access: AccessFilter | None = None,
     timer: StageTimer | None = None,
+    query_embedding: list[float] | None = None,
 ) -> list[RetrievedChunk]:
     """쿼리에 대한 관련 document_chunks를 유사도 순으로 반환합니다.
 
     bm25_enabled=True일 때 하이브리드 검색(BM25 + Vector, RRF 병합)을 수행합니다.
     access가 None이면 접근 제어 없이 검색합니다.
     timer가 주어지면 embed_ms/bm25_ms/vector_ms/acl_filter_ms 구간을 기록합니다.
+    query_embedding이 주어지면 쿼리 임베딩 호출을 생략하고 그 값을 재사용합니다
+    (시맨틱 캐시 조회에서 이미 계산한 임베딩).
     """
     settings = get_settings()
 
     if not settings.bm25_enabled:
-        return await _vector_only_retrieve(query, workspace_id, db, top_k, access, timer)
+        return await _vector_only_retrieve(
+            query, workspace_id, db, top_k, access, timer, query_embedding
+        )
 
     factor = _OVERFETCH_FACTOR
     overfetch_k = top_k * factor
     restricted = access is not None and not access.is_unrestricted
 
-    embed_task = asyncio.create_task(_get_query_embedding(query, timer))
+    embed_task = (
+        asyncio.create_task(_get_query_embedding(query, timer)) if query_embedding is None else None
+    )
     bm25_raw = _search_bm25_sync(query, workspace_id, db, overfetch_k, timer)
-    query_embedding = await embed_task
+    if embed_task is not None:
+        query_embedding = await embed_task
 
     refetch_count = 0
     while True:
@@ -155,11 +163,13 @@ async def _vector_only_retrieve(
     top_k: int,
     access: AccessFilter | None = None,
     timer: StageTimer | None = None,
+    query_embedding: list[float] | None = None,
 ) -> list[RetrievedChunk]:
     """기존 vector-only 검색 경로."""
-    with timer.measure("embed_ms") if timer else nullcontext():
-        embed_result = await embed_texts([query])
-    query_embedding = embed_result.embeddings[0]
+    if query_embedding is None:
+        with timer.measure("embed_ms") if timer else nullcontext():
+            embed_result = await embed_texts([query])
+        query_embedding = embed_result.embeddings[0]
 
     restricted = access is not None and not access.is_unrestricted
     factor = _OVERFETCH_FACTOR
