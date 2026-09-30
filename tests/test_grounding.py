@@ -177,3 +177,100 @@ async def test_parse_failure_sets_fallback_reason_parse_error():
     assert result.confidence == pytest.approx(_THRESHOLD + 0.1)
     assert result.llm_usage == _MOCK_USAGE
     assert result.fallback_reason == "parse_error"
+
+
+# ---------------------------------------------------------------------------
+# build_grounding_prompt: top_k / max_chunk_chars (판정 컨텍스트 축소)
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace
+
+from app.core.rag import grounding as grounding_module
+from app.core.rag.grounding import build_grounding_prompt
+
+
+def _long_chunks(n: int, content_len: int = 50) -> list[RetrievedChunk]:
+    return [
+        RetrievedChunk(
+            chunk_id=i,
+            source_type="document",
+            source_id=i,
+            title=f"chunk-{i}",
+            content="가" * content_len,
+            similarity_score=0.9 - i * 0.01,
+        )
+        for i in range(1, n + 1)
+    ]
+
+
+def _patch_judge_settings(monkeypatch, top_k=5, max_chars=0):
+    monkeypatch.setattr(
+        grounding_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            grounding_similarity_threshold=_THRESHOLD,
+            grounding_judge_top_k=top_k,
+            grounding_judge_max_chunk_chars=max_chars,
+        ),
+    )
+
+
+def test_build_prompt_top_k_limits_chunks():
+    prompt = build_grounding_prompt(_long_chunks(5), "질문", top_k=3, max_chunk_chars=0)
+    assert "[1]" in prompt and "[2]" in prompt and "[3]" in prompt
+    assert "[4]" not in prompt and "[5]" not in prompt
+    assert "chunk-3" in prompt and "chunk-4" not in prompt
+
+
+def test_build_prompt_truncates_with_marker():
+    prompt = build_grounding_prompt(_long_chunks(2, 50), "질문", top_k=2, max_chunk_chars=10)
+    assert "가" * 10 + "…(생략)" in prompt
+    assert "가" * 11 not in prompt
+
+
+def test_build_prompt_no_marker_when_content_short():
+    prompt = build_grounding_prompt(_long_chunks(1, 5), "질문", top_k=1, max_chunk_chars=10)
+    assert "…(생략)" not in prompt
+
+
+def test_build_prompt_defaults_from_settings_keep_five_no_truncation(monkeypatch):
+    _patch_judge_settings(monkeypatch)
+    prompt = build_grounding_prompt(_long_chunks(7, 2000), "질문")
+    assert "[5]" in prompt and "[6]" not in prompt
+    assert "…(생략)" not in prompt
+    assert "가" * 2000 in prompt
+
+
+def test_build_prompt_settings_override(monkeypatch):
+    _patch_judge_settings(monkeypatch, top_k=2, max_chars=20)
+    prompt = build_grounding_prompt(_long_chunks(5, 100), "질문")
+    assert "[2]" in prompt and "[3]" not in prompt
+    assert "…(생략)" in prompt
+
+
+async def test_assess_calls_llm_once_with_settings_based_prompt(monkeypatch):
+    _patch_judge_settings(monkeypatch, top_k=3, max_chars=0)
+    chunks = _long_chunks(5)
+
+    with patch("app.core.rag.grounding.llm.call_grounding", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = _grounding_ok(True, 0.9)
+        result = await assess(chunks, "질문")
+
+    mock_llm.assert_called_once()
+    prompt = mock_llm.call_args.args[0]
+    assert "[3]" in prompt and "[4]" not in prompt
+    assert result.is_groundable is True
+
+
+async def test_assess_owner_suggestion_uses_full_chunk_list(monkeypatch):
+    _patch_judge_settings(monkeypatch, top_k=1, max_chars=0)
+    chunks = [
+        _make_chunk(1, "document", 0.9),
+        _make_chunk(2, "git_commit", 0.8, author_id="u-42"),
+    ]
+
+    with patch("app.core.rag.grounding.llm.call_grounding", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = _grounding_ok(False, 0.1)
+        result = await assess(chunks, "질문")
+
+    assert result.suggested_owner_id == "u-42"

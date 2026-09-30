@@ -29,6 +29,8 @@ from app.core.rag.retriever import RetrievedChunk
 
 logger = logging.getLogger(__name__)
 
+_TRUNCATION_MARKER = "…(생략)"
+
 
 @dataclass
 class GroundingResult:
@@ -97,20 +99,39 @@ async def assess(
     )
 
 
-def build_grounding_prompt(chunks: list[RetrievedChunk], user_query: str) -> str:
+def build_grounding_prompt(
+    chunks: list[RetrievedChunk],
+    user_query: str,
+    *,
+    top_k: int | None = None,
+    max_chunk_chars: int | None = None,
+) -> str:
     """LLM 2차 판정(call_grounding)에 전달할 prompt를 구성합니다.
 
     assess()가 사용하는 것과 동일한 형식이며, scripts/eval/grounding_eval.py(A4)가
     임계치와 무관하게 LLM 판정을 항상 수집할 때 재사용합니다(프롬프트 텍스트 중복 방지).
+
+    top_k/max_chunk_chars가 None이면 settings(grounding_judge_top_k /
+    grounding_judge_max_chunk_chars)를 읽습니다. chunks는 retriever가 관련도 순(RRF 순위)으로
+    반환한 순서를 그대로 신뢰하여 앞에서부터 top_k개만 사용합니다. max_chunk_chars가 양수이면
+    청크 content를 해당 길이로 자르고 말미에 "…(생략)" 표시를 붙입니다(0이면 제한 없음).
     """
-    context = _format_context(chunks)
+    settings = get_settings()
+    if top_k is None:
+        top_k = settings.grounding_judge_top_k
+    if max_chunk_chars is None:
+        max_chunk_chars = settings.grounding_judge_max_chunk_chars
+    context = _format_context(chunks[:top_k], max_chunk_chars)
     return f"질문: {user_query}\n\n검색된 컨텍스트:\n{context}"
 
 
-def _format_context(chunks: list[RetrievedChunk]) -> str:
+def _format_context(chunks: list[RetrievedChunk], max_chunk_chars: int = 0) -> str:
     lines = []
     for i, chunk in enumerate(chunks, 1):
-        lines.append(f"[{i}] ({chunk.source_type}) {chunk.title}\n{chunk.content}")
+        content = chunk.content
+        if max_chunk_chars > 0 and len(content) > max_chunk_chars:
+            content = content[:max_chunk_chars] + _TRUNCATION_MARKER
+        lines.append(f"[{i}] ({chunk.source_type}) {chunk.title}\n{content}")
     return "\n\n".join(lines)
 
 
