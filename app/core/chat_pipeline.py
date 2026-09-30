@@ -226,6 +226,7 @@ def _record_chat_metric(
         "confidence": grounding_result.confidence,
         "grounding_stage": grounding_stage,
         "access_filtered": access_filtered,
+        "acl_refetch_count": timer.fields.get("acl_refetch_count"),
         "main_model": token_usage.main.model,
         "main_prompt_tokens": token_usage.main.prompt_tokens,
         "main_completion_tokens": token_usage.main.completion_tokens,
