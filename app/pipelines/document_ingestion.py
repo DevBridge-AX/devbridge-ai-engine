@@ -8,7 +8,9 @@
 
 관측성(R-4): read/chunk/embed/store 구간별 소요 시간과 file_bytes/char_count/chunk_count/
 embedding_input_chars(임베딩 API로 전송한 청크 텍스트 길이 합; embed 단계 도달 전 실패 시
-None), 결과(COMPLETED/EMPTY/FAILED/PARSE_WARN)와 실패 단계(failure_stage)/예외 클래스명
+None)/embedding_provider_tokens(embed_texts()가 반환한 EmbedResult.provider_tokens 실측
+합산치; embed 단계 도달 전 실패 시 또는 provider가 값을 반환하지 않은 경우 None), 결과
+(COMPLETED/EMPTY/FAILED/PARSE_WARN)와 실패 단계(failure_stage)/예외 클래스명
 (error_type)을 app.core.metrics.record_metric("ingestion", ...)으로 기록합니다. 이 메트릭은
 별도 집계용이며 KNOWLEDGE_DOCUMENTS.analysis_status 값에는 영향을 주지 않습니다.
 
@@ -109,7 +111,7 @@ async def _run(
         _record_ingestion_metric(
             timer, total_start, workspace_id, knowledge_document_id, doc_type,
             file_bytes=file_bytes, char_count=0, chunk_count=0, replacement_ratio=None,
-            embedding_input_chars=None,
+            embedding_input_chars=None, embedding_provider_tokens=None,
             result="FAILED", failure_stage="read", error_type=type(exc).__name__,
         )
         raise
@@ -125,6 +127,7 @@ async def _run(
             timer, total_start, workspace_id, knowledge_document_id, doc_type,
             file_bytes=file_bytes, char_count=char_count, chunk_count=0,
             replacement_ratio=replacement_ratio, embedding_input_chars=None,
+            embedding_provider_tokens=None,
             result="FAILED", failure_stage="chunk", error_type=type(exc).__name__,
         )
         raise
@@ -135,6 +138,7 @@ async def _run(
             timer, total_start, workspace_id, knowledge_document_id, doc_type,
             file_bytes=file_bytes, char_count=char_count, chunk_count=0,
             replacement_ratio=replacement_ratio, embedding_input_chars=None,
+            embedding_provider_tokens=None,
             result="EMPTY", failure_stage=None, error_type=None,
         )
         return
@@ -149,6 +153,7 @@ async def _run(
             timer, total_start, workspace_id, knowledge_document_id, doc_type,
             file_bytes=file_bytes, char_count=char_count, chunk_count=len(chunks),
             replacement_ratio=replacement_ratio, embedding_input_chars=embedding_input_chars,
+            embedding_provider_tokens=None,
             result="FAILED", failure_stage="embed", error_type=type(exc).__name__,
         )
         raise
@@ -197,9 +202,12 @@ async def _run(
             timer, total_start, workspace_id, knowledge_document_id, doc_type,
             file_bytes=file_bytes, char_count=char_count, chunk_count=len(chunks),
             replacement_ratio=replacement_ratio, embedding_input_chars=embedding_input_chars,
+            embedding_provider_tokens=getattr(result, "provider_tokens", None),
             result="FAILED", failure_stage="store", error_type=type(exc).__name__,
         )
         raise
+
+    embedding_provider_tokens = getattr(result, "provider_tokens", None)
 
     parse_warn_ratio = get_settings().ingestion_parse_warn_ratio
     result = "PARSE_WARN" if replacement_ratio > parse_warn_ratio else "COMPLETED"
@@ -208,6 +216,7 @@ async def _run(
         timer, total_start, workspace_id, knowledge_document_id, doc_type,
         file_bytes=file_bytes, char_count=char_count, chunk_count=len(chunks),
         replacement_ratio=replacement_ratio, embedding_input_chars=embedding_input_chars,
+        embedding_provider_tokens=embedding_provider_tokens,
         result=result, failure_stage=None, error_type=None,
     )
 
@@ -243,6 +252,7 @@ def _record_ingestion_metric(
     chunk_count: int,
     replacement_ratio: float | None,
     embedding_input_chars: int | None,
+    embedding_provider_tokens: int | None,
     result: str,
     failure_stage: str | None,
     error_type: str | None,
@@ -259,6 +269,9 @@ def _record_ingestion_metric(
         "replacement_ratio": replacement_ratio,
         # 임베딩 API로 전송한 청크 텍스트 길이 합(embed 단계 도달 전 실패 시 None).
         "embedding_input_chars": embedding_input_chars,
+        # EmbedResult.provider_tokens(실측, batch usageMetadata 합산치). embed 단계
+        # 도달 전 실패 시 또는 provider가 값을 반환하지 않은 경우 None.
+        "embedding_provider_tokens": embedding_provider_tokens,
         "read_ms": timer.stages.get("read_ms"),
         "chunk_ms": timer.stages.get("chunk_ms"),
         "embed_ms": timer.stages.get("embed_ms"),

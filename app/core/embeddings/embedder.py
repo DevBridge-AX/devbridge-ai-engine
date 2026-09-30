@@ -8,14 +8,18 @@ Google Gemini Embedding API (GMS 프록시 경유)의 batchEmbedContents 엔드�
 content(원문)는 불변이며, 모델 교체 시 이 모듈만 재호출하면 됩니다
 (content 재사용, embedding만 재생성).
 
-주의:
-- Gemini 임베딩 API는 응답에 실측 토큰 수(usageMetadata 등)를 포함하지 않습니다.
-  EmbedResult.total_tokens는 실측값이 아니라
+토큰 필드 정리 (2026-09-30 조사 결과 반영):
+- EmbedResult.total_tokens: usage_logs에 사용되는 과금 단위 추정치입니다.
   `len(texts) * settings.embedding_tokens_per_text`(기본 0.2, GMS 과금 단위
-  추정치)로 계산한 추정치이며, EmbedResult.token_source는 항상
-  "estimate_per_text"입니다. 즉 usage_logs.embedding_tokens에 누적되는 값도
-  실 토큰 집계가 아닌 추정치입니다. 추후 Google/GMS API가 실측 토큰 필드를
-  제공하면 이 부분을 업데이트하세요.
+  추정치)로 계산하며, token_source는 항상 "estimate_per_text"입니다(이 필드가
+  total_tokens의 산출 방식을 설명합니다). usage_logs.embedding_tokens의 의미
+  (provider 토큰인지 GMS 과금 단위인지)는 Spring 쪽 결정이 아직 열려 있어,
+  이 값은 그대로 유지합니다.
+- EmbedResult.provider_tokens: batchEmbedContents 응답의
+  usageMetadata.promptTokenCount를 배치 단위로 합산한 실측값입니다(요청 1건당
+  1개 카운트이며 텍스트 건별 값이 아님). 메트릭(embedding_provider_tokens)
+  기록에만 사용되며, usage_logs에는 반영하지 않습니다. 배치 중 하나라도
+  usageMetadata가 없으면 부분합은 의미가 없으므로 전체를 None으로 둡니다.
 """
 
 from dataclasses import dataclass
@@ -36,6 +40,9 @@ class EmbedResult:
     # 실측 아님: len(texts) * settings.embedding_tokens_per_text로 계산한 추정치.
     # 추후 실측 토큰원이 추가되면 이 값도 함께 갱신해야 합니다.
     token_source: str = "estimate_per_text"
+    # 실측: batchEmbedContents 응답 usageMetadata.promptTokenCount를 배치별로
+    # 합산한 값(요청 1건당 1개 카운트). 배치 중 하나라도 값이 없으면 None.
+    provider_tokens: int | None = None
 
 
 async def embed_texts(texts: list[str]) -> EmbedResult:
@@ -55,6 +62,8 @@ async def embed_texts(texts: list[str]) -> EmbedResult:
     model_path = f"models/{settings.embedding_model}"
 
     all_embeddings: list[list[float]] = []
+    provider_tokens_sum = 0
+    provider_tokens_complete = True
 
     for i in range(0, len(texts), _BATCH_SIZE):
         batch = texts[i : i + _BATCH_SIZE]
@@ -72,9 +81,19 @@ async def embed_texts(texts: list[str]) -> EmbedResult:
 
         all_embeddings.extend(item["values"] for item in data["embeddings"])
 
+        # batchEmbedContents는 요청(배치) 1건당 usageMetadata 1개를 반환한다
+        # (텍스트 건별 값이 아님). 배치 중 하나라도 없으면 부분합이 오도되므로
+        # provider_tokens 전체를 None으로 처리한다.
+        batch_prompt_tokens = data.get("usageMetadata", {}).get("promptTokenCount")
+        if batch_prompt_tokens is None:
+            provider_tokens_complete = False
+        elif provider_tokens_complete:
+            provider_tokens_sum += batch_prompt_tokens
+
     return EmbedResult(
         embeddings=all_embeddings,
         embedding_model=settings.embedding_model,
         embedding_model_version=settings.embedding_model_version,
         total_tokens=len(texts) * settings.embedding_tokens_per_text,
+        provider_tokens=provider_tokens_sum if provider_tokens_complete else None,
     )

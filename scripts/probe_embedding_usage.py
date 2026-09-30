@@ -14,6 +14,14 @@ batchEmbedContents 응답에 usageMetadata(실측 토큰 필드)가 실제로 �
   usageMetadata 존재 여부, countTokens의 상태 코드/최상위 키만 출력한다.
 - 설정은 app.config.get_settings()로만 읽으며 .env를 직접 읽지 않는다.
 
+조사 결과 (2026-09-30):
+- batchEmbedContents 응답에는 최상위 usageMetadata가 존재하며, 배치(요청) 1건당
+  promptTokenCount 1개를 반환한다(텍스트 건별 값이 아님). 이 값은
+  embedder.embed_texts()에서 배치별로 합산되어 EmbedResult.provider_tokens로
+  노출되고, 인덱싱 메트릭(embedding_provider_tokens)에만 기록된다.
+- countTokens 엔드포인트도 정상 동작하지만, 별도 API 호출이 추가로 필요해
+  요청 수가 늘어나므로 채택하지 않았다.
+
 사용법:
     python3 scripts/probe_embedding_usage.py
 """

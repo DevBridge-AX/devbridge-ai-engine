@@ -171,3 +171,68 @@ async def test_token_source_is_estimate():
         result = await embed_texts(["test"])
 
     assert result.token_source == "estimate_per_text"
+
+
+async def test_provider_tokens_summed_across_batches():
+    """2개 배치 각각의 usageMetadata.promptTokenCount가 합산되어야 하며,
+    total_tokens(추정치)는 이 값과 무관하게 그대로 유지되어야 합니다."""
+    n = 150  # 100 + 50, 배치 2회 분할
+    resp1 = MagicMock()
+    resp1.raise_for_status = MagicMock()
+    resp1.json.return_value = {
+        "embeddings": [{"values": [float(i)]} for i in range(100)],
+        "usageMetadata": {"promptTokenCount": 90, "promptTokenDetails": [{"modality": "TEXT", "tokenCount": 90}]},
+    }
+
+    resp2 = MagicMock()
+    resp2.raise_for_status = MagicMock()
+    resp2.json.return_value = {
+        "embeddings": [{"values": [float(i)]} for i in range(50)],
+        "usageMetadata": {"promptTokenCount": 45, "promptTokenDetails": [{"modality": "TEXT", "tokenCount": 45}]},
+    }
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=[resp1, resp2])
+
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=mock_client)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("app.core.embeddings.embedder.httpx.AsyncClient", return_value=ctx):
+        result = await embed_texts(["t"] * n)
+
+    assert mock_client.post.call_count == 2
+    assert result.provider_tokens == 90 + 45
+    assert result.total_tokens == pytest.approx(n * _TOKENS_PER_TEXT)
+
+
+async def test_provider_tokens_none_when_usage_missing():
+    """배치 중 하나라도 usageMetadata(promptTokenCount)가 없으면 provider_tokens는
+    None이어야 하며, total_tokens(추정치)는 이 값과 무관하게 그대로 유지되어야 합니다."""
+    n = 150
+    resp1 = MagicMock()
+    resp1.raise_for_status = MagicMock()
+    resp1.json.return_value = {
+        "embeddings": [{"values": [float(i)]} for i in range(100)],
+        "usageMetadata": {"promptTokenCount": 90},
+    }
+
+    resp2 = MagicMock()
+    resp2.raise_for_status = MagicMock()
+    resp2.json.return_value = {
+        "embeddings": [{"values": [float(i)]} for i in range(50)],
+        # 두 번째 배치는 usageMetadata가 없음
+    }
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=[resp1, resp2])
+
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=mock_client)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("app.core.embeddings.embedder.httpx.AsyncClient", return_value=ctx):
+        result = await embed_texts(["t"] * n)
+
+    assert result.provider_tokens is None
+    assert result.total_tokens == pytest.approx(n * _TOKENS_PER_TEXT)

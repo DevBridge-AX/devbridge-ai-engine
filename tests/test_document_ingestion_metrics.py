@@ -51,6 +51,7 @@ def patched_success(monkeypatch, tmp_path):
             embedding_model="fake",
             embedding_model_version="v0",
             total_tokens=len(texts),
+            provider_tokens=len(texts) * 3,
         )
 
     monkeypatch.setattr(document_ingestion, "embed_texts", fake_embed)
@@ -87,6 +88,7 @@ class TestSuccessPath:
         assert record["char_count"] > 0
         assert record["file_bytes"] > 0
         assert record["embedding_input_chars"] > 0
+        assert record["embedding_provider_tokens"] == record["chunk_count"] * 3
         for key in ("read_ms", "chunk_ms", "embed_ms", "store_ms", "total_ms"):
             assert record[key] is not None
             assert record[key] >= 0
