@@ -77,7 +77,7 @@ turn 1에서는 호출하지 않습니다 (원본 쿼리 그대로 사용).
 |---|---|
 | 용도 | 검색된 컨텍스트가 질문에 답변 가능한지 이진 판정 |
 | 환경변수 | `GROUNDING_MODEL` |
-| 현재 모델 | `gemini-3.5-flash-lite` (권장: `gemini-3.5-flash`) |
+| 현재 모델 (권장) | `gemini-2.5-flash-lite` |
 | provider | Gemini |
 | 호출 함수 | `provider.call_grounding()` |
 | 엔드포인트 | `POST {gemini_base_url}/models/{model}:generateContent` |
@@ -92,6 +92,14 @@ turn 1에서는 호출하지 않습니다 (원본 쿼리 그대로 사용).
 3. 프로젝트 고유 질문 → 컨텍스트에 근거가 있을 때만 `is_groundable=true`
 
 Gemini의 `responseSchema` (Structured Output)를 사용하여 JSON 형식을 강제합니다.
+
+> **주의**: thinking 모델(`gemini-2.5-flash`, `gemini-3.5-flash`)은 grounding에
+> 사용할 수 없습니다. `call_grounding()`의 `max_tokens=64`가 추론(thinking)
+> 토큰에 모두 소비되어 `MAX_TOKENS`로 truncate되고 빈 응답이 반환됩니다
+> (`provider.call_grounding()`은 이 경우 `finishReason`/`thoughtsTokenCount`를
+> 감지해 경고 로그를 남기고 `{}`를 반환 — grounding.assess()는 이를 파싱 실패로
+> 간주해 유사도 fallback을 적용합니다). 현재 `gemini-2.5-flash-lite`만 thinking
+> 없이 정상 동작합니다.
 
 ---
 
@@ -149,7 +157,7 @@ Gemini의 `responseSchema` (Structured Output)를 사용하여 JSON 형식을 �
   ├─ [grounding 1차] 유사도 < 0.35?      ← API 호출 없음
   │     └─ Yes → is_groundable=False (차단)
   │
-  ├─ [grounding 2차] call_grounding()    ← gemini-3.5-flash
+  ├─ [grounding 2차] call_grounding()    ← gemini-2.5-flash-lite
   │     └─ is_groundable=false → 차단
   │
   └─ [답변 생성] call_main_stream()      ← claude-sonnet-4-6
@@ -180,7 +188,7 @@ GMS_API_KEY=                          # GMS 통합 API Key (필수)
 
 MAIN_MODEL=claude-sonnet-4-6          # 메인 답변 생성
 REWRITE_MODEL=gemini-3.5-flash        # 멀티턴 쿼리 재구성 (권장)
-GROUNDING_MODEL=gemini-3.5-flash      # 그라운딩 판정 (권장)
+GROUNDING_MODEL=gemini-2.5-flash-lite # 그라운딩 판정 (thinking 모델은 max_tokens=64에서 truncate되어 사용 불가)
 EMBEDDING_MODEL=gemini-embedding-2    # 임베딩 생성
 
 AI_ANALYSIS_MODE=fallback             # 문서 분석 모드 (fallback | llm)
