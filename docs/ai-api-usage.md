@@ -217,3 +217,50 @@ DOCUMENT_ANALYSIS_MODEL=fallback-v1   # 문서 분석 표시용 모델명
 - Credit 단가 적용 및 비용 계산은 Spring 백엔드의 책임.
 
 인덱싱(임베딩) 토큰은 `usage_logs` 테이블에 workspace별 일 단위로 별도 누적됩니다.
+
+---
+
+## 라이브 검증 실행법
+
+`tests/live/`는 실제 GMS API를 호출해 `/chat` SSE 계약·페르소나 6종·멀티턴 rewrite·
+provider 각 함수를 검증하는 라이브 E2E 하네스입니다. 기본 `python3 -m pytest`는
+`pyproject.toml`의 `addopts = "-m 'not live'"`로 이 테스트들을 항상 제외하므로,
+평소 테스트/CI에서는 과금이 발생하지 않습니다.
+
+### 실행 명령
+
+```bash
+RUN_LIVE_LLM=1 python3 -m pytest -m live -q tests/live
+```
+
+- `RUN_LIVE_LLM=1`과 비어있지 않은 `GMS_API_KEY`(`.env`)가 **모두** 있어야 실행됩니다.
+  `GMS_API_KEY`가 `.env`에 이미 있어도 `RUN_LIVE_LLM=1`을 명시하지 않으면
+  `tests/live/conftest.py`의 게이트가 전체 skip 처리합니다(우발적 과금 방지).
+- `python3 -m pytest -m live -q tests/live --collect-only`로 실행 없이 테스트
+  목록만 확인할 수 있습니다.
+
+### 무엇을 하는가
+
+1. tmp 디렉터리에 `VECTOR_STORE_PATH`/`METRICS_DIR`를 격리하고, 비용 상한을 위해
+   `MAIN_MAX_TOKENS=256`으로 낮춥니다(`main_max_tokens` 설정값, 운영 기본값은 4096로
+   불변).
+2. `scripts/eval/seed.py::seed_workspace()`가 `tests/live/fixtures/corpus/*.md`
+   (배포 절차/결제 API/인증·JWT 정책/장애 대응 runbook, 4개 가상 문서)를 새
+   워크스페이스(`live-{uuid8}`)에 실 임베딩으로 인덱싱합니다.
+3. `/chat` SSE 계약(turn1, 코퍼스 밖 질문 not-groundable, 멀티턴 rewrite, 페르소나
+   6종)과 `provider.py`의 grounding/embedding/call_structured를 실제 GMS 응답으로
+   검증합니다. 페르소나 답변은 품질 판정 없이 앞 200자만 결과 파일에 남깁니다.
+
+### 비용 상한 설계
+
+- 코퍼스 문서 4개(각 1~2KB), `top_k=5` 유지.
+- `main_max_tokens=256`으로 메인 답변 생성 비용을 제한합니다.
+- 1회 실행 예상 호출량: `/chat` 약 10회 × (main 입력 ~2k / 출력 ≤256 + grounding
+  ~1k/10) + rewrite 2~3회 + 임베딩 ~20건 수준(제안 상한: 총 5만 토큰 이하).
+
+### 결과 확인
+
+세션 종료 시(`pytest_sessionfinish`) 이번 실행의 `llm_calls.jsonl`/`chat_metrics.jsonl`을
+purpose×model별 토큰 합계와 지연 p50/p95로 집계해 터미널에 출력하고,
+`data/live_runs/{YYYYMMDD-HHMMSS}.json`(`data/`는 gitignore 대상)에 저장합니다. 페르소나
+답변 미리보기도 같은 파일에 포함되므로 수동 검토에 활용합니다.
