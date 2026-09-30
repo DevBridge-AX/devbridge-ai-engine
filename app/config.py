@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     # 그라운딩 유사도 1차 필터 임계치
     grounding_similarity_threshold: float = 0.35
 
+    # 그라운딩 2차 판정 시스템 프롬프트 버전 (app/core/rag/grounding_prompts.py의 키)
+    grounding_prompt_version: str = "v1"
+
     # BM25 하이브리드 검색
     bm25_enabled: bool = True
     bm25_cache_ttl_seconds: int = 600
