@@ -1,8 +1,10 @@
 """
 git_ingestion source_id 처리 테스트.
 
-ingest_git_commits(source_id=None) 경로와, 이후 실제 source_id로 재호출 시
-_refresh_existing_commit()이 GIT_COMMITS.source_id를 backfill하는지 검증합니다.
+GIT_COMMITS.source_id는 Spring 스키마와 맞춰 NOT NULL이다(06-23 정합성 교정).
+따라서 (1) /ingestion/git 엔드포인트는 source_id/data_source_id가 모두 없으면 422로 거절하고,
+(2) 파이프라인에 None이 들어오면 FAILED 메트릭으로 기록되며(조용히 성공하지 않음),
+(3) 이미 저장된 source_id는 None 재호출로 덮어써지지 않아야 한다.
 Spring 사용자조회(httpx)·임베딩·벡터스토어·메트릭은 mock, DB는 인메모리 SQLite입니다.
 """
 
@@ -85,12 +87,6 @@ def patched_pipeline(monkeypatch):
     )
 
 
-# 알려진 결함: app/db/models.py GitCommit.source_id가 nullable=False라서 source_id=None 인덱싱은
-# IntegrityError(NOT NULL)로 FAILED 처리된다. 모델을 nullable=True로 고치면 strict xfail이 깨져 알려준다.
-_NULL_SOURCE_ID_BUG = pytest.mark.xfail(
-    strict=True,
-    reason="GitCommit.source_id가 nullable=False라 source_id=None 삽입이 NOT NULL 제약으로 실패",
-)
 
 
 def _read_records(metrics_dir) -> list[dict]:
@@ -105,41 +101,38 @@ def _get_commit(session_local, commit_hash: str) -> GitCommit | None:
         ).scalar_one_or_none()
 
 
-class TestIngestWithNullSourceId:
+class TestNullSourceIdIsRejected:
 
-    @_NULL_SOURCE_ID_BUG
-    def test_completes_and_row_has_null_source_id(self, sqlite_session_local, metrics_tmp_dir):
+    def test_pipeline_records_failed_not_silent_success(self, sqlite_session_local, metrics_tmp_dir):
+        """None이 파이프라인까지 오면 NOT NULL 제약으로 FAILED가 기록되어야 한다(불변 조건 문서화)."""
         commit = _commit("aaa1111")
 
         asyncio.run(git_ingestion.ingest_git_commits("ws-1", None, [commit]))
 
         records = _read_records(metrics_tmp_dir)
         assert len(records) == 1
-        assert records[0]["result"] == "COMPLETED", records[0]
+        assert records[0]["result"] == "FAILED", records[0]
+        assert records[0]["error_type"] == "IntegrityError"
+        assert _get_commit(sqlite_session_local, commit.commit_hash) is None
 
-        row = _get_commit(sqlite_session_local, commit.commit_hash)
-        assert row is not None
-        assert row.source_id is None
+    def test_git_endpoint_returns_422_without_source_id(self):
+        """엔드포인트는 백그라운드로 넘기기 전에 거절해야 한다."""
+        from fastapi.testclient import TestClient
+        from app.config import get_settings
+        from app.main import app
 
-        with sqlite_session_local() as db:
-            chunks = db.execute(select(DocumentChunk)).scalars().all()
-        assert len(chunks) > 0
+        client = TestClient(app)
+        headers = {"X-Internal-Api-Key": get_settings().internal_api_key}
+        body = {
+            "workspace_id": "ws-1",
+            "commits": [_commit("ddd4444").model_dump(mode="json")],
+        }
+        resp = client.post("/api/ingestion/git", json=body, headers=headers)
+        assert resp.status_code == 422
+        assert "source_id" in resp.json()["detail"]
 
 
 class TestBackfillSourceId:
-
-    @_NULL_SOURCE_ID_BUG
-    def test_later_call_with_real_source_id_backfills(self, sqlite_session_local, metrics_tmp_dir):
-        commit = _commit("bbb2222")
-
-        asyncio.run(git_ingestion.ingest_git_commits("ws-1", None, [commit]))
-        asyncio.run(git_ingestion.ingest_git_commits("ws-1", "src-real", [commit]))
-
-        records = _read_records(metrics_tmp_dir)
-        assert [r["result"] for r in records] == ["COMPLETED", "COMPLETED"], records
-
-        row = _get_commit(sqlite_session_local, commit.commit_hash)
-        assert row.source_id == "src-real"
 
     def test_existing_source_id_not_overwritten_by_none(self, sqlite_session_local, metrics_tmp_dir):
         commit = _commit("ccc3333")

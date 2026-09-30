@@ -104,6 +104,13 @@ async def ingest_git_endpoint(
 ) -> dict:
     """Schedule Git commit indexing."""
     source_id = request.source_id or request.data_source_id
+    if not source_id:
+        # GIT_COMMITS.source_id는 Spring 스키마와 맞춰 NOT NULL이다. 백그라운드에서
+        # IntegrityError로 조용히 FAILED 처리되지 않도록 요청 시점에 거절한다.
+        raise HTTPException(
+            status_code=422,
+            detail="source_id (or data_source_id) is required for git ingestion",
+        )
 
     background_tasks.add_task(
         ingest_git_commits,
