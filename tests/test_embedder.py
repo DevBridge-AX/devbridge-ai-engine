@@ -7,7 +7,10 @@ httpx.AsyncClient를 모킹하여 외부 API 호출 없이 검증합니다.
 import pytest
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
-from app.core.embeddings.embedder import _TOKENS_PER_TEXT, EmbedResult, embed_texts
+from app.config import get_settings
+from app.core.embeddings.embedder import EmbedResult, embed_texts
+
+_TOKENS_PER_TEXT = get_settings().embedding_tokens_per_text
 
 
 def _make_mock_client(embeddings: list[list[float]]):
@@ -134,3 +137,37 @@ async def test_embed_result_model_fields():
     assert isinstance(result, EmbedResult)
     assert result.embedding_model  # 비어있지 않아야 함
     assert result.embedding_model_version  # 비어있지 않아야 함
+
+
+async def test_total_tokens_uses_config_constant(monkeypatch):
+    """total_tokens는 module 상수가 아니라 settings.embedding_tokens_per_text를 사용해야 합니다."""
+    from types import SimpleNamespace
+
+    from app.core.embeddings import embedder
+
+    custom_settings = SimpleNamespace(
+        gemini_base_url="https://gms.example.com/gemini",
+        embedding_model="fake-embedding-model",
+        embedding_model_version="v9",
+        gms_api_key="test-key",
+        embedding_tokens_per_text=1.5,  # 기본값(0.2)과 다른 값으로 오버라이드
+    )
+    monkeypatch.setattr(embedder, "get_settings", lambda: custom_settings)
+
+    n = 3
+    mock_client = _make_mock_client([[0.1]] * n)
+
+    with patch("app.core.embeddings.embedder.httpx.AsyncClient", return_value=_patch_client(mock_client)):
+        result = await embed_texts(["텍스트"] * n)
+
+    assert result.total_tokens == pytest.approx(n * 1.5)
+
+
+async def test_token_source_is_estimate():
+    """EmbedResult.token_source는 실측이 아닌 추정치임을 항상 나타내야 합니다."""
+    mock_client = _make_mock_client([[0.1, 0.2]])
+
+    with patch("app.core.embeddings.embedder.httpx.AsyncClient", return_value=_patch_client(mock_client)):
+        result = await embed_texts(["test"])
+
+    assert result.token_source == "estimate_per_text"

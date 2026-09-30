@@ -9,9 +9,13 @@ content(원문)는 불변이며, 모델 교체 시 이 모듈만 재호출하면
 (content 재사용, embedding만 재생성).
 
 주의:
-- Gemini 임베딩 API는 응답에 토큰 수를 포함하지 않습니다.
-  EmbedResult.total_tokens는 항상 0이며, usage_logs 누적 시 실 토큰 집계가
-  불가합니다. 추후 Google의 API 변경 시 이 부분을 업데이트하세요.
+- Gemini 임베딩 API는 응답에 실측 토큰 수(usageMetadata 등)를 포함하지 않습니다.
+  EmbedResult.total_tokens는 실측값이 아니라
+  `len(texts) * settings.embedding_tokens_per_text`(기본 0.2, GMS 과금 단위
+  추정치)로 계산한 추정치이며, EmbedResult.token_source는 항상
+  "estimate_per_text"입니다. 즉 usage_logs.embedding_tokens에 누적되는 값도
+  실 토큰 집계가 아닌 추정치입니다. 추후 Google/GMS API가 실측 토큰 필드를
+  제공하면 이 부분을 업데이트하세요.
 """
 
 from dataclasses import dataclass
@@ -21,7 +25,6 @@ import httpx
 from app.config import get_settings
 
 _BATCH_SIZE = 100  # batchEmbedContents 최대 100건
-_TOKENS_PER_TEXT = 0.2  # GMS 고정 과금 단위 (텍스트 1건당 0.2 토큰)
 
 
 @dataclass
@@ -30,6 +33,9 @@ class EmbedResult:
     embedding_model: str
     embedding_model_version: str
     total_tokens: float
+    # 실측 아님: len(texts) * settings.embedding_tokens_per_text로 계산한 추정치.
+    # 추후 실측 토큰원이 추가되면 이 값도 함께 갱신해야 합니다.
+    token_source: str = "estimate_per_text"
 
 
 async def embed_texts(texts: list[str]) -> EmbedResult:
@@ -70,5 +76,5 @@ async def embed_texts(texts: list[str]) -> EmbedResult:
         embeddings=all_embeddings,
         embedding_model=settings.embedding_model,
         embedding_model_version=settings.embedding_model_version,
-        total_tokens=len(texts) * _TOKENS_PER_TEXT,
+        total_tokens=len(texts) * settings.embedding_tokens_per_text,
     )

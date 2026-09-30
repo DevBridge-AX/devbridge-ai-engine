@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     embedding_model: str = "gemini-embedding-2"
     embedding_model_version: str = "v1"
 
+    # Gemini Embedding API는 응답에 실측 토큰 수를 포함하지 않으므로, GMS 과금 단위
+    # 기준으로 텍스트 1건당 0.2 토큰을 고정 추정치로 사용합니다(usage_logs 누적용).
+    # 실측이 아닌 추정치이며, embedder.EmbedResult.token_source="estimate_per_text"로 표시됩니다.
+    embedding_tokens_per_text: float = 0.2
+
     # LLM provider
     main_model: str = "claude-sonnet-4-6"
     rewrite_model: str = "claude-sonnet-4-6"
