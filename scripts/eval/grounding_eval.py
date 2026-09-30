@@ -18,13 +18,22 @@ LLM 2차 판정을 라벨셋(scripts/eval/datasets/grounding_cases.jsonl)으로 
     RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live
     RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --limit 5   # 스모크용 소량 실행
 
-    # 2) 오프라인 스윕 (API 호출 없음) — 캐시된 결과로 임계치 0.20~0.60을 스윕합니다.
-    python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-20260930-120000.jsonl
+    # 1-b) 판정 변형 비교(G1) — 케이스당 검색 1회 + 변형마다 판정 1회(변형 수만큼 비용 증가).
+    #      --variants 기본값은 VARIANTS 전체(baseline,strict,top3,strict_top3,strict_top3_cap).
+    RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline,strict
 
-캐시 레코드 스키마(jsonl 1줄 = 케이스 1건):
-    {id, category, expected_groundable, top_similarity, llm_is_groundable,
+    # 2) 오프라인 스윕 (API 호출 없음) — 캐시된 결과로 임계치 0.20~0.60을 스윕합니다.
+    #    캐시에 변형이 여러 개면 baseline 스윕에 더해 변형 비교 표(임계치 기본값은
+    #    settings.grounding_similarity_threshold, --threshold로 override)와 변형 간 판정이
+    #    갈린 케이스 표를 출력합니다. variant 필드가 없는 레코드(A4 캐시)는 baseline입니다.
+    python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-20260930-120000.jsonl
+    python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-....jsonl --threshold 0.35
+
+캐시 레코드 스키마(jsonl 1줄 = 케이스x변형 1건):
+    {variant, id, category, expected_groundable, top_similarity, llm_is_groundable,
      llm_confidence, parse_ok, fallback_reason, latency_ms, prompt_tokens,
-     completion_tokens}
+     completion_tokens, prompt_chars}
+    (variant/prompt_chars는 G1에서 추가된 필드이며 없어도 로드됩니다.)
 
 fail-open 반영: app/core/rag/grounding.py::assess()는 call_grounding 예외
 ("llm_error") 또는 파싱 실패("parse_error") 시 is_groundable=True로 fail-open
@@ -49,6 +58,16 @@ _DEFAULT_CACHE_DIR = _REPO_ROOT / "data" / "eval"
 
 # 오프라인 스윕 임계치: 0.20 ~ 0.60, 0.05 간격 (부동소수 오차 방지를 위해 정수 스텝으로 계산)
 SWEEP_THRESHOLDS = [round(0.20 + 0.05 * i, 2) for i in range(9)]
+
+# 판정 변형(G1): 프롬프트 버전 / 판정에 넣는 청크 수 / 청크 길이 상한(0=제한 없음).
+# 기본 설정(app/config.py)은 변경하지 않으며 이 표는 비교 실험 전용입니다.
+VARIANTS: dict[str, dict] = {
+    "baseline": {"prompt_version": "v1", "top_k": 5, "max_chunk_chars": 0},
+    "strict": {"prompt_version": "v2-strict", "top_k": 5, "max_chunk_chars": 0},
+    "top3": {"prompt_version": "v1", "top_k": 3, "max_chunk_chars": 0},
+    "strict_top3": {"prompt_version": "v2-strict", "top_k": 3, "max_chunk_chars": 0},
+    "strict_top3_cap": {"prompt_version": "v2-strict", "top_k": 3, "max_chunk_chars": 600},
+}
 
 _CONFIDENCE_BUCKETS = [("0.0-0.5", 0.0, 0.5), ("0.5-0.8", 0.5, 0.8), ("0.8-1.0", 0.8, 1.0)]
 
@@ -260,6 +279,128 @@ def compute_metrics(records: list[dict], threshold: float) -> dict:
     }
 
 
+def group_by_variant(records: list[dict]) -> dict[str, list[dict]]:
+    """레코드를 variant별로 묶습니다. variant 필드가 없는 레코드(A4 캐시)는 "baseline"입니다."""
+    grouped: dict[str, list[dict]] = {}
+    for record in records:
+        grouped.setdefault(str(record.get("variant") or "baseline"), []).append(record)
+    return grouped
+
+
+def compute_variant_comparison(
+    records_by_variant: dict[str, list[dict]], threshold: float
+) -> dict:
+    """variant별 지표와 variant 간 판정이 갈린 케이스를 계산합니다(순수 함수, API 호출 없음).
+
+    Returns:
+        {
+          "threshold": float,
+          "variants": {name: {"total", "accuracy", "precision", "recall", "f1",
+                              "groundable_false_block_count", "groundable_total",
+                              "groundable_false_block_rate", "mean_prompt_tokens",
+                              "mean_latency_ms", "parse_failure_rate"}},
+          "disagreements": [{"id", "category", "expected", "correct": {variant: bool|None}}],
+        }
+    groundable 오차단 = expected_groundable=True인데 최종 판정이 False인 건
+    (1차 필터 차단 + 2차 판정 false 모두 포함).
+    """
+    variants: dict[str, dict] = {}
+    finals: dict[str, dict[str, tuple[bool, dict]]] = {}  # variant -> case id -> (final, record)
+
+    for name, records in records_by_variant.items():
+        m = compute_metrics(records, threshold)
+        ng = m["not_groundable"]
+        groundable_total = 0
+        false_block = 0
+        per_case: dict[str, tuple[bool, dict]] = {}
+        for record in records:
+            final = _final_decision(record, threshold)
+            per_case[str(record["id"])] = (final, record)
+            if bool(record["expected_groundable"]):
+                groundable_total += 1
+                if not final:
+                    false_block += 1
+        finals[name] = per_case
+        variants[name] = {
+            "total": m["total"],
+            "accuracy": m["accuracy"],
+            "precision": ng["precision"],
+            "recall": ng["recall"],
+            "f1": ng["f1"],
+            "groundable_false_block_count": false_block,
+            "groundable_total": groundable_total,
+            "groundable_false_block_rate": (false_block / groundable_total) if groundable_total else None,
+            "mean_prompt_tokens": m["mean_prompt_tokens"],
+            "mean_latency_ms": m["mean_latency_ms"],
+            "parse_failure_rate": m["parse_failure_rate"],
+        }
+
+    case_ids: list[str] = []
+    for per_case in finals.values():
+        for cid in per_case:
+            if cid not in case_ids:
+                case_ids.append(cid)
+
+    disagreements = []
+    for cid in case_ids:
+        present = {name: per_case[cid] for name, per_case in finals.items() if cid in per_case}
+        if len({final for final, _ in present.values()}) <= 1:
+            continue
+        any_record = next(iter(present.values()))[1]
+        expected = bool(any_record["expected_groundable"])
+        disagreements.append(
+            {
+                "id": cid,
+                "category": str(any_record.get("category", "unknown")),
+                "expected": expected,
+                "correct": {
+                    name: (present[name][0] == expected if name in present else None)
+                    for name in finals
+                },
+            }
+        )
+
+    return {"threshold": threshold, "variants": variants, "disagreements": disagreements}
+
+
+def render_variant_markdown(records_by_variant: dict[str, list[dict]], threshold: float) -> str:
+    """variant 비교 표와 판정이 갈린 케이스 표를 markdown으로 렌더링합니다(순수 함수)."""
+    result = compute_variant_comparison(records_by_variant, threshold)
+    lines = [
+        f"# 그라운딩 판정 변형 비교 (threshold {threshold:.2f})",
+        "",
+        "| variant | accuracy | not-gr precision | not-gr recall | not-gr F1 "
+        "| groundable 오차단 | 평균 prompt_tokens | 평균 latency_ms | 파싱 실패율 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for name, v in result["variants"].items():
+        fb = (
+            f"{v['groundable_false_block_count']}/{v['groundable_total']} "
+            f"({_fmt(v['groundable_false_block_rate'])})"
+        )
+        lines.append(
+            f"| {name} | {_fmt(v['accuracy'])} | {_fmt(v['precision'])} | {_fmt(v['recall'])} | "
+            f"{_fmt(v['f1'])} | {fb} | {_fmt(v['mean_prompt_tokens'], pct=False)} | "
+            f"{_fmt(v['mean_latency_ms'], pct=False)} | {_fmt(v['parse_failure_rate'])} |"
+        )
+
+    names = list(result["variants"])
+    lines += ["", "## variant 간 판정이 갈린 케이스 (✓ 정답 / ✗ 오답)", ""]
+    if not result["disagreements"]:
+        lines.append("없음")
+    else:
+        lines.append("| id | category | expected | " + " | ".join(names) + " |")
+        lines.append("| --- | --- | --- | " + " | ".join("---" for _ in names) + " |")
+        for d in result["disagreements"]:
+            expected = "groundable" if d["expected"] else "not-groundable"
+            cells = " | ".join(
+                "-" if d["correct"][n] is None else ("✓" if d["correct"][n] else "✗") for n in names
+            )
+            lines.append(f"| {d['id']} | {d['category']} | {expected} | {cells} |")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _fmt(value: float | None, pct: bool = True) -> str:
     if value is None:
         return "-"
@@ -305,11 +446,26 @@ def render_sweep_markdown(records: list[dict], thresholds: list[float] | None = 
     return "\n".join(lines).rstrip() + "\n"
 
 
+def render_report(records: list[dict], threshold: float | None = None) -> str:
+    """임계치 스윕(baseline 또는 유일한 variant)과, variant가 여러 개면 변형 비교 표를 합쳐 렌더링합니다."""
+    grouped = group_by_variant(records)
+    if len(grouped) <= 1:
+        return render_sweep_markdown(records)
+    if threshold is None:
+        from app.config import get_settings
+
+        threshold = get_settings().grounding_similarity_threshold
+    sweep_records = grouped.get("baseline") or next(iter(grouped.values()))
+    return render_sweep_markdown(sweep_records) + "\n" + render_variant_markdown(grouped, threshold)
+
+
 # ---------------------------------------------------------------------------
 # 라이브 수집 (실 GMS API 호출) — CLI에서만 사용, 순수 함수와 분리
 # ---------------------------------------------------------------------------
 
-async def _collect_records(dataset_path: Path, limit: int | None) -> list[dict]:
+async def _collect_records(
+    dataset_path: Path, limit: int | None, variant_names: list[str] | None = None
+) -> list[dict]:
     """tmp 워크스페이스를 시드하고 케이스마다 retrieve + (임계치 무관) call_grounding을
     호출해 결과 레코드를 만듭니다. RUN_LIVE_LLM 게이트는 호출부(main)의 책임입니다.
 
@@ -354,48 +510,59 @@ async def _collect_records(dataset_path: Path, limit: int | None) -> list[dict]:
                 chunks = await retriever.retrieve(question, workspace_id, db, top_k=5)
                 top_similarity = max((c.similarity_score for c in chunks), default=0.0)
 
-                prompt = build_grounding_prompt(chunks, question)
+                for variant_name in variant_names:
+                    cfg = VARIANTS[variant_name]
+                    prompt = build_grounding_prompt(
+                        chunks,
+                        question,
+                        top_k=cfg["top_k"],
+                        max_chunk_chars=cfg["max_chunk_chars"],
+                    )
 
-                start = time.perf_counter()
-                llm_is_groundable = None
-                llm_confidence = None
-                prompt_tokens = None
-                completion_tokens = None
-                parse_ok = True
-                fallback_reason = None
-                try:
-                    raw, usage = await llm.call_grounding(prompt)
-                except Exception:
-                    parse_ok = False
-                    fallback_reason = "llm_error"
-                else:
-                    prompt_tokens = usage.prompt_tokens
-                    completion_tokens = usage.completion_tokens
-                    is_g = raw.get("is_groundable")
-                    conf = raw.get("confidence")
-                    if is_g is None or conf is None:
+                    start = time.perf_counter()
+                    llm_is_groundable = None
+                    llm_confidence = None
+                    prompt_tokens = None
+                    completion_tokens = None
+                    parse_ok = True
+                    fallback_reason = None
+                    try:
+                        raw, usage = await llm.call_grounding(
+                            prompt, system_prompt=get_grounding_prompt(cfg["prompt_version"])
+                        )
+                    except Exception:
                         parse_ok = False
-                        fallback_reason = "parse_error"
+                        fallback_reason = "llm_error"
                     else:
-                        llm_is_groundable = bool(is_g)
-                        llm_confidence = float(conf)
-                latency_ms = (time.perf_counter() - start) * 1000
+                        prompt_tokens = usage.prompt_tokens
+                        completion_tokens = usage.completion_tokens
+                        is_g = raw.get("is_groundable")
+                        conf = raw.get("confidence")
+                        if is_g is None or conf is None:
+                            parse_ok = False
+                            fallback_reason = "parse_error"
+                        else:
+                            llm_is_groundable = bool(is_g)
+                            llm_confidence = float(conf)
+                    latency_ms = (time.perf_counter() - start) * 1000
 
-                records.append(
-                    {
-                        "id": case["id"],
-                        "category": case["category"],
-                        "expected_groundable": case["expected_groundable"],
-                        "top_similarity": top_similarity,
-                        "llm_is_groundable": llm_is_groundable,
-                        "llm_confidence": llm_confidence,
-                        "parse_ok": parse_ok,
-                        "fallback_reason": fallback_reason,
-                        "latency_ms": latency_ms,
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                    }
-                )
+                    records.append(
+                        {
+                            "variant": variant_name,
+                            "id": case["id"],
+                            "category": case["category"],
+                            "expected_groundable": case["expected_groundable"],
+                            "top_similarity": top_similarity,
+                            "llm_is_groundable": llm_is_groundable,
+                            "llm_confidence": llm_confidence,
+                            "parse_ok": parse_ok,
+                            "fallback_reason": fallback_reason,
+                            "latency_ms": latency_ms,
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "prompt_chars": len(prompt),
+                        }
+                    )
             return records
         finally:
             db.close()
@@ -459,6 +626,20 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="--live 결과 캐시 저장 경로 (기본: data/eval/grounding-{YYYYMMDD-HHMMSS}.jsonl)",
     )
+    parser.add_argument(
+        "--variants",
+        type=str,
+        default=None,
+        help="--live 수집 시 쉼표로 구분한 판정 변형 목록 (기본 전체: "
+        + ", ".join(VARIANTS)
+        + "). 케이스당 검색은 1회, 변형마다 판정 호출 1회가 발생합니다.",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="변형 비교 표에 적용할 유사도 임계치 (기본: settings.grounding_similarity_threshold)",
+    )
     args = parser.parse_args(argv)
 
     if args.live and args.from_cache:
@@ -466,7 +647,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.from_cache:
         records = load_cache(args.from_cache)
-        print(render_sweep_markdown(records))
+        print(render_report(records, args.threshold))
         return 0
 
     if args.live:
@@ -478,7 +659,11 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        records = asyncio.run(_collect_records(args.dataset, args.limit))
+        variant_names = [v.strip() for v in args.variants.split(",") if v.strip()] if args.variants else None
+        unknown = [v for v in (variant_names or []) if v not in VARIANTS]
+        if unknown:
+            parser.error(f"알 수 없는 variant: {', '.join(unknown)} (사용 가능: {', '.join(VARIANTS)})")
+        records = asyncio.run(_collect_records(args.dataset, args.limit, variant_names))
 
         out_path = args.out
         if out_path is None:
@@ -487,7 +672,7 @@ def main(argv: list[str] | None = None) -> int:
         save_cache(out_path, records)
         print(f"수집 완료: {len(records)}건 -> {out_path}")
         print()
-        print(render_sweep_markdown(records))
+        print(render_report(records, args.threshold))
         return 0
 
     parser.error("--live 또는 --from-cache 중 하나를 지정하세요.")

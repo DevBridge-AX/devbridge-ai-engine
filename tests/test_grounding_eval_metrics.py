@@ -5,7 +5,15 @@ scripts/eval/grounding_eval.py::compute_metrics 단위 테스트.
 scripts/eval/grounding_eval.py 모듈 docstring 및 --live 수집 로직과 동일합니다.
 """
 
-from scripts.eval.grounding_eval import compute_metrics, render_sweep_markdown
+from scripts.eval.grounding_eval import (
+    VARIANTS,
+    compute_metrics,
+    compute_variant_comparison,
+    group_by_variant,
+    render_report,
+    render_sweep_markdown,
+    render_variant_markdown,
+)
 
 
 def _record(
@@ -251,3 +259,107 @@ def test_render_sweep_markdown_contains_thresholds_and_categories():
 def test_render_sweep_markdown_empty_records():
     text = render_sweep_markdown([], thresholds=[0.35])
     assert "케이스 수: 0" in text
+
+
+# ---------------------------------------------------------------------------
+# 판정 변형 비교 (G1)
+# ---------------------------------------------------------------------------
+
+def _variant_data():
+    base = [
+        _record(id="g1", expected_groundable=True, llm_is_groundable=True, prompt_tokens=100, latency_ms=100.0),
+        _record(id="g2", expected_groundable=True, llm_is_groundable=True, prompt_tokens=100, latency_ms=100.0),
+        _record(id="n1", category="project_unanswerable", expected_groundable=False,
+                llm_is_groundable=True, prompt_tokens=100, latency_ms=100.0),
+        _record(id="n2", category="project_unanswerable", expected_groundable=False,
+                llm_is_groundable=False, prompt_tokens=100, latency_ms=100.0),
+    ]
+    strict = [
+        _record(id="g1", expected_groundable=True, llm_is_groundable=True, prompt_tokens=60, latency_ms=50.0),
+        _record(id="g2", expected_groundable=True, llm_is_groundable=False, prompt_tokens=60, latency_ms=50.0),
+        _record(id="n1", category="project_unanswerable", expected_groundable=False,
+                llm_is_groundable=False, prompt_tokens=60, latency_ms=50.0),
+        _record(id="n2", category="project_unanswerable", expected_groundable=False,
+                llm_is_groundable=None, prompt_tokens=60, latency_ms=50.0, parse_ok=False,
+                llm_confidence=None, fallback_reason="parse_error"),
+    ]
+    return {"baseline": base, "strict": strict}
+
+
+def test_group_by_variant_defaults_to_baseline():
+    grouped = group_by_variant([_record(id="a"), {**_record(id="b"), "variant": "strict"}])
+    assert set(grouped) == {"baseline", "strict"}
+    assert [r["id"] for r in grouped["baseline"]] == ["a"]
+
+
+def test_variants_table_matches_spec():
+    assert set(VARIANTS) == {"baseline", "strict", "top3", "strict_top3", "strict_top3_cap"}
+    assert VARIANTS["strict_top3_cap"] == {"prompt_version": "v2-strict", "top_k": 3, "max_chunk_chars": 600}
+
+
+def test_compute_variant_comparison_metrics():
+    result = compute_variant_comparison(_variant_data(), threshold=0.35)
+    b = result["variants"]["baseline"]
+    s = result["variants"]["strict"]
+
+    assert b["accuracy"] == 0.75
+    assert b["recall"] == 0.5  # n2만 not-groundable로 잡음
+    assert b["precision"] == 1.0
+    assert b["groundable_false_block_count"] == 0
+    assert b["groundable_total"] == 2
+    assert b["mean_prompt_tokens"] == 100.0
+    assert b["parse_failure_rate"] == 0.0
+
+    # strict: g2 오차단, n2는 parse_error fail-open -> groundable(오답)
+    assert s["groundable_false_block_count"] == 1
+    assert s["groundable_false_block_rate"] == 0.5
+    assert s["recall"] == 0.5
+    assert s["precision"] == 0.5
+    assert s["mean_prompt_tokens"] == 60.0
+    assert s["mean_latency_ms"] == 50.0
+    assert s["parse_failure_rate"] == 0.25
+
+
+def test_compute_variant_comparison_disagreements():
+    result = compute_variant_comparison(_variant_data(), threshold=0.35)
+    by_id = {d["id"]: d for d in result["disagreements"]}
+    assert set(by_id) == {"g2", "n1", "n2"}
+    assert by_id["n2"]["correct"] == {"baseline": True, "strict": False}  # strict는 fail-open
+    assert by_id["g2"]["correct"] == {"baseline": True, "strict": False}
+    assert by_id["n1"]["correct"] == {"baseline": False, "strict": True}
+    assert by_id["n1"]["category"] == "project_unanswerable"
+    assert by_id["n1"]["expected"] is False
+
+
+def test_compute_variant_comparison_threshold_applies_filter():
+    result = compute_variant_comparison(_variant_data(), threshold=0.95)
+    # 모든 top_similarity(0.5)가 임계치 미만 -> 전부 1차 필터 차단, variant 간 차이 없음
+    assert result["variants"]["baseline"]["groundable_false_block_count"] == 2
+    assert result["disagreements"] == []
+
+
+def test_render_variant_markdown_contents():
+    text = render_variant_markdown(_variant_data(), threshold=0.35)
+    assert "threshold 0.35" in text
+    assert "| baseline |" in text and "| strict |" in text
+    assert "1/2 (50.0%)" in text
+    assert "| g2 | project_answerable | groundable | ✓ | ✗ |" in text
+    assert "| n1 | project_unanswerable | not-groundable | ✗ | ✓ |" in text
+
+
+def test_render_variant_markdown_no_disagreement():
+    data = {"baseline": [_record(id="a")], "strict": [_record(id="a")]}
+    assert "없음" in render_variant_markdown(data, threshold=0.35)
+
+
+def test_render_report_single_variant_is_plain_sweep():
+    text = render_report([_record(id="a")], threshold=0.35)
+    assert "임계치 스윕" in text
+    assert "변형 비교" not in text
+
+
+def test_render_report_multi_variant_includes_both():
+    records = [{**r, "variant": name} for name, rs in _variant_data().items() for r in rs]
+    text = render_report(records, threshold=0.35)
+    assert "임계치 스윕" in text
+    assert "변형 비교" in text
