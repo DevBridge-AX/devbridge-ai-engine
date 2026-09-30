@@ -1,5 +1,5 @@
 """
-관측성 메트릭 JSONL 집계 스크립트 (R-4, C-4).
+관측성 메트릭 JSONL 집계 스크립트 (R-4, C-4, A2).
 
 app.core.metrics.record_metric()이 남긴 {metrics_dir}/{event}.jsonl 파일들을 읽어
 이벤트(파일)별로 파싱 성공률, 단계별(*_ms) p50/p95, 실패 사유 분포를 markdown으로
@@ -13,6 +13,9 @@ app.core.metrics.record_metric()이 남긴 {metrics_dir}/{event}.jsonl 파일들
   인덱싱 자체는 계속 진행되었으므로 성공으로 집계하되, 실패 사유 분포에는 포함하지 않음.
 - 단계별 p50/p95: 키 이름이 "_ms"로 끝나는 필드 중 숫자(None 제외) 값의 분위수.
 - 실패 사유 분포: result == "FAILED"인 레코드의 failure_stage / error_type 값별 개수.
+- llm_calls 전용: purpose×model별 호출 수, latency_ms p50/p95, 평균 prompt/completion
+  토큰, 파싱 실패율(parse_ok=False 비율), 에러 수(error_type 존재 레코드 수)를 별도
+  표로 집계 (app/core/llm/provider.py의 LLM 호출 단위 관측성).
 """
 
 import argparse
@@ -117,6 +120,49 @@ def compute_failure_distribution(records: list[dict]) -> dict[str, dict[str, int
     return {"failure_stage": stage_counts, "error_type": error_counts}
 
 
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def compute_llm_calls_breakdown(records: list[dict]) -> dict[tuple[str, str], dict[str, object]]:
+    """llm_calls 이벤트를 (purpose, model)별로 묶어 호출 수/지연/토큰/파싱 실패율/에러 수를 계산합니다.
+
+    purpose/model 키가 없는 레코드는 "unknown"으로 묶습니다.
+    """
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for record in records:
+        purpose = str(record.get("purpose") or "unknown")
+        model = str(record.get("model") or "unknown")
+        groups.setdefault((purpose, model), []).append(record)
+
+    breakdown: dict[tuple[str, str], dict[str, object]] = {}
+    for key, group in groups.items():
+        latencies = [float(r["latency_ms"]) for r in group if _is_number(r.get("latency_ms"))]
+        prompt_tokens = [float(r["prompt_tokens"]) for r in group if _is_number(r.get("prompt_tokens"))]
+        completion_tokens = [
+            float(r["completion_tokens"]) for r in group if _is_number(r.get("completion_tokens"))
+        ]
+        parse_ok_values = [r["parse_ok"] for r in group if "parse_ok" in r]
+        parse_failures = sum(1 for v in parse_ok_values if v is False)
+        error_count = sum(1 for r in group if r.get("error_type"))
+
+        breakdown[key] = {
+            "count": len(group),
+            "p50_latency_ms": _percentile(latencies, 50),
+            "p95_latency_ms": _percentile(latencies, 95),
+            "avg_prompt_tokens": (sum(prompt_tokens) / len(prompt_tokens)) if prompt_tokens else 0.0,
+            "avg_completion_tokens": (
+                sum(completion_tokens) / len(completion_tokens) if completion_tokens else 0.0
+            ),
+            "parse_failure_rate": (
+                parse_failures / len(parse_ok_values) * 100 if parse_ok_values else 0.0
+            ),
+            "error_count": error_count,
+        }
+
+    return breakdown
+
+
 def render_markdown(records_by_event: dict[str, list[dict]]) -> str:
     """이벤트별 집계 결과를 markdown 문자열로 렌더링합니다."""
     lines: list[str] = ["# 메트릭 집계 리포트", ""]
@@ -153,6 +199,23 @@ def render_markdown(records_by_event: dict[str, list[dict]]) -> str:
                 f"{k}={v}" for k, v in sorted(failure_dist["error_type"].items())
             ))
             lines.append("")
+
+        if event == "llm_calls":
+            breakdown = compute_llm_calls_breakdown(records)
+            if breakdown:
+                lines.append(
+                    "| purpose | model | 호출 수 | p50(ms) | p95(ms) | "
+                    "평균 prompt_tokens | 평균 completion_tokens | 파싱 실패율(%) | 에러 수 |"
+                )
+                lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+                for (purpose, model), stats in sorted(breakdown.items()):
+                    lines.append(
+                        f"| {purpose} | {model} | {stats['count']} | "
+                        f"{stats['p50_latency_ms']:.1f} | {stats['p95_latency_ms']:.1f} | "
+                        f"{stats['avg_prompt_tokens']:.1f} | {stats['avg_completion_tokens']:.1f} | "
+                        f"{stats['parse_failure_rate']:.1f} | {stats['error_count']} |"
+                    )
+                lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
 

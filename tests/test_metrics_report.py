@@ -87,6 +87,55 @@ class TestResultSummaryAndFailures:
         assert dist["error_type"] == {"RuntimeError": 1, "TimeoutError": 1, "FileNotFoundError": 1}
 
 
+class TestLLMCallsBreakdown:
+
+    def test_groups_by_purpose_and_model_with_stats(self):
+        records = [
+            {
+                "purpose": "main", "model": "claude-a", "latency_ms": 100.0,
+                "prompt_tokens": 50, "completion_tokens": 10, "parse_ok": True,
+            },
+            {
+                "purpose": "main", "model": "claude-a", "latency_ms": 200.0,
+                "prompt_tokens": 60, "completion_tokens": 20, "parse_ok": True,
+            },
+            {
+                "purpose": "grounding", "model": "gemini-lite", "latency_ms": 50.0,
+                "prompt_tokens": 120, "completion_tokens": 0, "parse_ok": False,
+                "error_type": None,
+            },
+            {
+                "purpose": "grounding", "model": "gemini-lite", "latency_ms": 999.0,
+                "prompt_tokens": 0, "completion_tokens": 0, "parse_ok": True,
+                "error_type": "HTTPStatusError",
+            },
+        ]
+
+        breakdown = metrics_report.compute_llm_calls_breakdown(records)
+
+        assert set(breakdown) == {("main", "claude-a"), ("grounding", "gemini-lite")}
+
+        main_stats = breakdown[("main", "claude-a")]
+        assert main_stats["count"] == 2
+        assert main_stats["p50_latency_ms"] == 150.0
+        assert main_stats["avg_prompt_tokens"] == 55.0
+        assert main_stats["avg_completion_tokens"] == 15.0
+        assert main_stats["parse_failure_rate"] == 0.0
+        assert main_stats["error_count"] == 0
+
+        grounding_stats = breakdown[("grounding", "gemini-lite")]
+        assert grounding_stats["count"] == 2
+        assert grounding_stats["parse_failure_rate"] == 50.0
+        assert grounding_stats["error_count"] == 1
+
+    def test_missing_purpose_or_model_grouped_as_unknown(self):
+        breakdown = metrics_report.compute_llm_calls_breakdown([{"latency_ms": 10.0}])
+        assert ("unknown", "unknown") in breakdown
+
+    def test_empty_records_returns_empty_breakdown(self):
+        assert metrics_report.compute_llm_calls_breakdown([]) == {}
+
+
 class TestRenderMarkdownAndCli:
 
     def test_render_markdown_contains_event_sections(self):
@@ -104,6 +153,31 @@ class TestRenderMarkdownAndCli:
 
     def test_render_markdown_handles_empty_dir(self):
         assert "집계할" in metrics_report.render_markdown({})
+
+    def test_render_markdown_includes_llm_calls_breakdown_table(self):
+        records_by_event = {
+            "llm_calls": [
+                {
+                    "purpose": "main", "model": "claude-a", "latency_ms": 100.0,
+                    "prompt_tokens": 50, "completion_tokens": 10, "parse_ok": True,
+                },
+                {
+                    "purpose": "grounding", "model": "gemini-lite", "latency_ms": 50.0,
+                    "prompt_tokens": 120, "completion_tokens": 0, "parse_ok": False,
+                },
+            ]
+        }
+        markdown = metrics_report.render_markdown(records_by_event)
+
+        assert "## llm_calls (2건)" in markdown
+        assert "purpose" in markdown and "model" in markdown
+        assert "| main | claude-a |" in markdown
+        assert "| grounding | gemini-lite |" in markdown
+
+    def test_render_markdown_other_events_have_no_llm_calls_table(self):
+        records_by_event = {"chat_metrics": [{"total_ms": 5.0}]}
+        markdown = metrics_report.render_markdown(records_by_event)
+        assert "평균 prompt_tokens" not in markdown
 
     def test_main_returns_zero_for_valid_dir(self, tmp_path, capsys):
         _write_jsonl(tmp_path / "ingestion.jsonl", [{"result": "COMPLETED", "total_ms": 1.0}])
