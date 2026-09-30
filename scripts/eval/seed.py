@@ -25,6 +25,12 @@ _CORPUS_DIR = Path(__file__).resolve().parents[2] / "tests" / "live" / "fixtures
 
 
 def seed_workspace(tmp_dir: Path) -> tuple[Session, str]:
+    """동기 호출부(pytest fixture 등)용 래퍼. 실행 중인 이벤트 루프 안에서는
+    seed_workspace_async()를 await하세요."""
+    return asyncio.run(seed_workspace_async(tmp_dir))
+
+
+async def seed_workspace_async(tmp_dir: Path) -> tuple[Session, str]:
     """tmp_dir 아래에 sqlite DB를 만들고 corpus 문서를 실 임베딩으로 인덱싱합니다.
 
     Args:
@@ -53,6 +59,6 @@ def seed_workspace(tmp_dir: Path) -> tuple[Session, str]:
             )
         )
         db.commit()
-        asyncio.run(_run(db, workspace_id, doc_id, str(path), "md"))
+        await _run(db, workspace_id, doc_id, str(path), "md")
 
     return db, workspace_id
