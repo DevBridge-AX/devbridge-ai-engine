@@ -11,9 +11,12 @@ Important behavior:
 - If document_chunks already exist for the commit, do not duplicate vectors.
 - If analysis does not exist or is not completed, create/update analysis result.
 
-관측성(R-4): 커밋 수, 신규/스킵 청크 수, 임베딩 소요 시간(embed_ms), 전체 소요 시간
-(total_ms), 실패 여부를 app.core.metrics.record_metric("git_ingestion", ...)으로
-기록합니다. 커밋 원문/메시지는 payload에 포함하지 않습니다.
+관측성(R-4): 커밋 수, 신규/스킵 청크 수, 임베딩 API로 전송한 청크 텍스트 길이 합
+(embedding_input_chars), EmbedResult.provider_tokens(실측 토큰) 커밋 전체 합산치
+(embedding_provider_tokens; 커밋 중 하나라도 실측값이 없으면 None), 임베딩 소요
+시간(embed_ms), 전체 소요 시간(total_ms), 실패 여부를
+app.core.metrics.record_metric("git_ingestion", ...)으로 기록합니다.
+커밋 원문/메시지는 payload에 포함하지 않습니다.
 """
 
 from __future__ import annotations
@@ -62,6 +65,8 @@ async def ingest_git_commits(
                 embedding_model,
                 new_chunk_count,
                 skipped_chunk_count,
+                embedding_input_chars,
+                embedding_provider_tokens,
                 embed_ms,
                 failed_commit_count,
                 failures,
@@ -88,6 +93,8 @@ async def ingest_git_commits(
             _record_git_ingestion_metric(
                 total_start, workspace_id, len(commits),
                 new_chunk_count=new_chunk_count, skipped_chunk_count=skipped_chunk_count,
+                embedding_input_chars=embedding_input_chars,
+                embedding_provider_tokens=embedding_provider_tokens,
                 embed_ms=embed_ms, result=result, error_type=error_type,
                 failed_commit_count=failed_commit_count,
             )
@@ -96,7 +103,10 @@ async def ingest_git_commits(
             db.rollback()
             _record_git_ingestion_metric(
                 total_start, workspace_id, len(commits),
-                new_chunk_count=None, skipped_chunk_count=None, embed_ms=None,
+                new_chunk_count=None, skipped_chunk_count=None,
+                embedding_input_chars=None,
+                embedding_provider_tokens=None,
+                embed_ms=None,
                 result="FAILED", error_type=type(exc).__name__,
                 failed_commit_count=len(commits),
             )
@@ -108,15 +118,17 @@ async def _run(
     source_id: str | None,
     commits: list[CommitData],
     sensitivity_level: str = "normal",
-) -> tuple[int, str, int, int, float, int, list[tuple[int, str]]]:
+) -> tuple[int, str, int, int, int, int | None, float, int, list[tuple[int, str]]]:
     """커밋 단위 부분 성공으로 인덱싱합니다.
 
     커밋 1건 = SAVEPOINT 1개. 한 커밋이 실패하면 해당 SAVEPOINT만 롤백하고(GIT_COMMITS/
     청크/분석 행 모두 남지 않음), 그 커밋이 벡터스토어에 이미 쓴 벡터는 삭제한 뒤 다음
     커밋을 계속 처리합니다. 성공분은 호출자의 db.commit()으로 확정됩니다.
 
-    반환: (total_tokens, last_model, new_chunk_count, skipped_chunk_count, embed_ms,
-    failed_commit_count, failures[(commit_index, error_type)]).
+    반환: (total_tokens, last_model, new_chunk_count, skipped_chunk_count,
+    embedding_input_chars, embedding_provider_tokens(실측, 커밋 전체 합산; 실제로 임베딩을
+    호출한 커밋 중 하나라도 실측값이 없으면 None), embed_ms, failed_commit_count,
+    failures[(commit_index, error_type)]).
     """
     settings = get_settings()
     vector_store = get_vector_store()
@@ -125,6 +137,9 @@ async def _run(
     last_model = settings.embedding_model
     new_chunk_count = 0
     skipped_chunk_count = 0
+    embedding_input_chars_total = 0
+    embedding_provider_tokens_total = 0
+    embedding_provider_tokens_complete = True
     embed_ms_total = 0.0
     failures: list[tuple[int, str]] = []
 
@@ -148,6 +163,8 @@ async def _run(
                     embedding_model,
                     commit_new_chunks,
                     commit_skipped_chunks,
+                    commit_input_chars,
+                    commit_provider_tokens,
                     commit_embed_ms,
                 ) = await _index_commit_if_needed(
                     db=db,
@@ -183,13 +200,24 @@ async def _run(
             last_model = embedding_model
         new_chunk_count += commit_new_chunks
         skipped_chunk_count += commit_skipped_chunks
+        embedding_input_chars_total += commit_input_chars
         embed_ms_total += commit_embed_ms
+
+        if commit_provider_tokens is None:
+            embedding_provider_tokens_complete = False
+        elif embedding_provider_tokens_complete:
+            embedding_provider_tokens_total += commit_provider_tokens
 
     if len(failures) < len(commits):
         get_bm25_manager().invalidate(workspace_id)
 
+    embedding_provider_tokens = (
+        embedding_provider_tokens_total if embedding_provider_tokens_complete else None
+    )
+
     return (
-        total_tokens, last_model, new_chunk_count, skipped_chunk_count, embed_ms_total,
+        total_tokens, last_model, new_chunk_count, skipped_chunk_count,
+        embedding_input_chars_total, embedding_provider_tokens, embed_ms_total,
         len(failures), failures,
     )
 
@@ -213,6 +241,8 @@ def _record_git_ingestion_metric(
     *,
     new_chunk_count: int | None,
     skipped_chunk_count: int | None,
+    embedding_input_chars: int | None,
+    embedding_provider_tokens: int | None,
     embed_ms: float | None,
     result: str,
     error_type: str | None,
@@ -226,6 +256,11 @@ def _record_git_ingestion_metric(
         "failed_commit_count": failed_commit_count,
         "new_chunk_count": new_chunk_count,
         "skipped_chunk_count": skipped_chunk_count,
+        # 임베딩 API로 전송한 청크 텍스트 길이 합(배치 전체 누적; 외부 예외 시에만 None).
+        "embedding_input_chars": embedding_input_chars,
+        # EmbedResult.provider_tokens(실측) 커밋 전체 합산치. 실제로 임베딩을 호출한
+        # 커밋 중 하나라도 실측값이 없으면, 또는 외부 예외 시 None.
+        "embedding_provider_tokens": embedding_provider_tokens,
         "embed_ms": embed_ms,
         "total_ms": total_ms,
         "result": result,
@@ -310,8 +345,10 @@ async def _index_commit_if_needed(
     vector_store,
     sensitivity_level: str = "normal",
     added_vector_ids: list[str] | None = None,
-) -> tuple[str | None, int, str | None, int, int, float]:
-    """반환: (primary_vector_id, embedding_tokens, embedding_model, new_chunk_count, skipped_chunk_count, embed_ms)."""
+) -> tuple[str | None, int, str | None, int, int, int, int | None, float]:
+    """반환: (primary_vector_id, embedding_tokens, embedding_model, new_chunk_count,
+    skipped_chunk_count, embedding_input_chars, embedding_provider_tokens(실측; embed를
+    호출하지 않은 경우 0), embed_ms)."""
     existing_chunks = db.execute(
         select(DocumentChunk).where(
             DocumentChunk.workspace_id == workspace_id,
@@ -325,7 +362,7 @@ async def _index_commit_if_needed(
             "git_ingestion: commit chunks already exist. commit_hash=%s",
             commit.commit_hash,
         )
-        return existing_chunks[0].vector_id, 0, None, 0, len(existing_chunks), 0.0
+        return existing_chunks[0].vector_id, 0, None, 0, len(existing_chunks), 0, 0, 0.0
 
     chunks = chunk_document(commit_text, doc_type="git_diff")
     if not chunks:
@@ -333,7 +370,9 @@ async def _index_commit_if_needed(
             "git_ingestion: no chunks generated. commit_hash=%s",
             commit.commit_hash,
         )
-        return None, 0, None, 0, 0, 0.0
+        return None, 0, None, 0, 0, 0, 0, 0.0
+
+    embedding_input_chars = sum(len(chunk.content) for chunk in chunks)
 
     embed_start = time.perf_counter()
     result = await embed_texts([chunk.content for chunk in chunks])
@@ -386,7 +425,10 @@ async def _index_commit_if_needed(
 
     primary_vector_id = pending[0][2] if pending else None
 
-    return primary_vector_id, result.total_tokens, result.embedding_model, len(chunks), 0, embed_ms
+    return (
+        primary_vector_id, result.total_tokens, result.embedding_model, len(chunks), 0,
+        embedding_input_chars, getattr(result, "provider_tokens", None), embed_ms,
+    )
 
 
 def _build_commit_text(commit: CommitData) -> str:

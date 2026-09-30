@@ -58,6 +58,7 @@ def patched_pipeline(monkeypatch):
             embedding_model="fake",
             embedding_model_version="v0",
             total_tokens=len(texts),
+            provider_tokens=len(texts) * 3,
         )
 
     async def fake_lookup_author_id(email, settings):
@@ -95,22 +96,26 @@ class TestRunAccumulatesChunkCounts:
         commit_a = _commit("aaa1111")
 
         with sqlite_session_local() as db:
-            _, _, new_count, skipped_count, embed_ms, _, _ = asyncio.run(
+            _, _, new_count, skipped_count, input_chars, provider_tokens, embed_ms, _, _ = asyncio.run(
                 git_ingestion._run(db, "ws-1", "src-1", [commit_a])
             )
             db.commit()
 
         assert new_count > 0
         assert skipped_count == 0
+        assert input_chars > 0
+        assert provider_tokens is not None and provider_tokens > 0
         assert embed_ms >= 0
 
         with sqlite_session_local() as db:
-            _, _, new_count2, skipped_count2, embed_ms2, _, _ = asyncio.run(
+            _, _, new_count2, skipped_count2, input_chars2, provider_tokens2, embed_ms2, _, _ = asyncio.run(
                 git_ingestion._run(db, "ws-1", "src-1", [commit_a])
             )
 
         assert new_count2 == 0
         assert skipped_count2 > 0
+        assert input_chars2 == 0
+        assert provider_tokens2 == 0
         assert embed_ms2 == 0.0
 
 
@@ -129,6 +134,8 @@ class TestIngestGitCommitsMetric:
         assert record["commit_count"] == 1
         assert record["new_chunk_count"] > 0
         assert record["skipped_chunk_count"] == 0
+        assert record["embedding_input_chars"] > 0
+        assert record["embedding_provider_tokens"] == record["new_chunk_count"] * 3
         assert record["embed_ms"] >= 0
         assert record["total_ms"] >= 0
         assert record["error_type"] is None
@@ -154,4 +161,5 @@ class TestIngestGitCommitsMetric:
         assert record["failed_commit_count"] == 1
         assert record["error_type"] == "RuntimeError"
         assert record["new_chunk_count"] == 0  # 전 커밋 실패: 집계값은 0(외부 예외일 때만 None)
+        assert record["embedding_input_chars"] == 0  # 위와 동일한 이유로 0
         assert record["commit_count"] == 1

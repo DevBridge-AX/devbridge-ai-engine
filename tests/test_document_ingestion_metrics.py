@@ -51,6 +51,7 @@ def patched_success(monkeypatch, tmp_path):
             embedding_model="fake",
             embedding_model_version="v0",
             total_tokens=len(texts),
+            provider_tokens=len(texts) * 3,
         )
 
     monkeypatch.setattr(document_ingestion, "embed_texts", fake_embed)
@@ -86,6 +87,8 @@ class TestSuccessPath:
         assert record["chunk_count"] > 0
         assert record["char_count"] > 0
         assert record["file_bytes"] > 0
+        assert record["embedding_input_chars"] > 0
+        assert record["embedding_provider_tokens"] == record["chunk_count"] * 3
         for key in ("read_ms", "chunk_ms", "embed_ms", "store_ms", "total_ms"):
             assert record[key] is not None
             assert record[key] >= 0
@@ -111,6 +114,7 @@ class TestEmptyPath:
         assert record["result"] == "EMPTY"
         assert record["chunk_count"] == 0
         assert record["failure_stage"] is None
+        assert record["embedding_input_chars"] is None
 
 
 class TestFailurePaths:
@@ -130,6 +134,7 @@ class TestFailurePaths:
         assert record["failure_stage"] == "read"
         assert record["error_type"] == "FileNotFoundError"
         assert record["chunk_count"] == 0
+        assert record["embedding_input_chars"] is None
 
     def test_embed_failure_records_failure_stage_embed(self, db, monkeypatch, tmp_path, metrics_tmp_dir):
         async def failing_embed(texts):
@@ -152,6 +157,7 @@ class TestFailurePaths:
         assert record["failure_stage"] == "embed"
         assert record["error_type"] == "RuntimeError"
         assert record["chunk_count"] > 0
+        assert record["embedding_input_chars"] > 0
 
     def test_store_failure_records_failure_stage_store(self, db, monkeypatch, tmp_path, metrics_tmp_dir):
         async def fake_embed(texts):
@@ -185,3 +191,4 @@ class TestFailurePaths:
         assert record["result"] == "FAILED"
         assert record["failure_stage"] == "store"
         assert record["error_type"] == "RuntimeError"
+        assert record["embedding_input_chars"] > 0

@@ -117,7 +117,7 @@ Gemini의 `responseSchema` (Structured Output)를 사용하여 JSON 형식을 �
 | 배치 크기 | 최대 100건/요청 (초과 시 자동 분할) |
 | 호출 시점 | 문서/Git/담당자답변 인덱싱 시, 채팅 검색 쿼리 임베딩 시 |
 
-**참고**: Gemini Embedding API는 응답에 토큰 수를 포함하지 않습니다. `usage_logs`에는 텍스트 1건당 0.2 토큰으로 고정 추정하여 누적합니다.
+**알려진 한계**: batchEmbedContents 응답의 usageMetadata.promptTokenCount(배치 요청 1건당 1개, 텍스트 건별 값 아님)를 통해 provider 실측 토큰을 확인할 수 있으며, `embedder.embed_texts()`가 이를 배치 단위로 합산해 `EmbedResult.provider_tokens`로 노출하고 인덱싱 메트릭(`embedding_provider_tokens`)에 기록합니다. 다만 `usage_logs.embedding_tokens`에 누적되는 값은 여전히 provider 실측치가 아니라, 텍스트 건수 × `embedding_tokens_per_text`(기본 0.2, GMS 과금 단위 추정치)로 계산한 추정치입니다(`EmbedResult.token_source="estimate_per_text"`). `usage_logs.embedding_tokens`이 provider 실측 토큰과 GMS 과금 단위 추정치 중 무엇을 의미해야 하는지는 Spring 쪽 결정이 아직 열려 있어, 그 값 자체는 변경하지 않았습니다. `usage_logs` 테이블 스키마 자체는 변경되지 않습니다.
 
 ---
 
