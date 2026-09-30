@@ -288,70 +288,52 @@ data: {
 
 ## 🚀 시작하기 (Getting Started)
 
-### 1. 개발 환경 요구사항
-- Python 3.11 이상
-- MySQL 8.0 이상
+신규 환경에서는 아래 순서대로 진행합니다. 요구사항: Python 3.11+, MySQL 8.0+, [uv](https://docs.astral.sh/uv/)
 
-### 2. 가상환경 및 패키지 설치
-이 프로젝트는 최신 `pyproject.toml` 표준을 따르고 있습니다. 가상환경을 생성한 후 의존성을 설치하십시오.
-
-```bash
-# 가상환경 생성 및 활성화
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 개발용 패키지(pytest 등)를 포함하여 설치
-pip install -e ".[dev]"
-```
-
-### 3. 환경 변수 설정
-`.env.example` 파일을 바탕으로 로컬용 `.env` 파일을 생성하고 값을 채웁니다.
-
+### 1. 환경 변수 설정
 ```bash
 cp .env.example .env
 ```
+`.env`에서 최소한 `INTERNAL_API_KEY`, `MYSQL_USER_AI`/`MYSQL_PASSWORD_AI`, `DATABASE_URL`, `GMS_API_KEY`, `SPRING_BACKEND_BASE_URL`을 채웁니다. 전체 변수와 의미는 [`.env.example`](.env.example)을 참고하세요.
 
-```ini
-# --- Internal API 인증 (Spring -> FastAPI, X-Internal-Api-Key 헤더 검증) ---
-INTERNAL_API_KEY=changeme
+### 2. DB 스키마·계정 생성 (선행 조건, 수동)
+`alembic upgrade head`는 스키마와 DB 계정을 만들어 주지 않으므로, 먼저 [`init-db/init.sql`](init-db/init.sql)을 1회 실행해야 합니다. `devbridge_ai` 스키마(utf8mb4)와, 그 스키마에만 권한을 가진 AI 엔진 전용 계정을 생성합니다.
 
-# --- Database (AI 도메인 전용 스키마, Spring과 별도 DB 계정) ---
-DATABASE_URL=mysql+pymysql://ai_engine_user:changeme@localhost:3306/devbridge_ai
-
-# --- Vector store (임베디드/파일 기반, 별도 서버 없음) ---
-VECTOR_STORE_PROVIDER=chroma
-VECTOR_STORE_PATH=./data/vector_store
-
-# --- GMS 통합 API Key (Claude / GPT / Gemini 공통) ---
-GMS_API_KEY=your-gms-api-key
-
-# --- LLM 모델 설정 (교체는 이 값들만 변경, 코드 수정 불필요) ---
-MAIN_MODEL=claude-sonnet-4-6
-REWRITE_MODEL=claude-sonnet-4-6
-GROUNDING_MODEL=gemini-3.5-flash-lite
-EMBEDDING_MODEL=gemini-embedding-2
-
-# --- Spring backend 연동 ---
-SPRING_BACKEND_BASE_URL=http://localhost:8080
-```
-
-전체 변수 목록과 각 변수의 의미는 [`.env.example`](.env.example)을 참고하세요.
-
-### 4. 로컬 서버 실행
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+set -a; . ./.env; set +a
+envsubst '${MYSQL_USER_AI} ${MYSQL_PASSWORD_AI}' < init-db/init.sql | mysql -u root -p
 ```
-- API Swagger 문서: `http://localhost:8000/docs`에서 확인 가능합니다.
+- 이 레포에는 MySQL 컨테이너를 띄우는 docker-compose가 없어 자동 실행되지 않습니다. MySQL을 Docker로 직접 띄운다면 치환을 마친 SQL을 `/docker-entrypoint-initdb.d`에 마운트해도 됩니다.
+- `DATABASE_URL`의 스키마명은 `devbridge_ai`와 일치해야 합니다.
+
+### 3. 의존성 설치
+```bash
+uv sync --extra dev
+```
+
+### 4. DB 마이그레이션 (Alembic)
+```bash
+uv run alembic upgrade head
+```
+> [!IMPORTANT]
+> Spring 소유 공유 테이블(`DATA_SOURCES`, `KNOWLEDGE_DOCUMENTS`, `GIT_COMMITS`, `DATABASE_SCHEMAS` 등)은 Spring(`ddl-auto`)이 생성·변경하며, **이 레포는 해당 테이블을 마이그레이션하지 않습니다.** 리비전에는 공유 테이블에 대한 CREATE/ALTER/DROP을 넣지 않고 AI 전용 테이블(`document_chunks`, `usage_logs`)만 다룹니다. `alembic revision --autogenerate` 결과에 공유 테이블 DDL이 포함되면 리비전에서 제거해야 하며, 공유 테이블의 스키마 변경은 Spring 쪽에 요청하세요. Spring 소유 비즈니스 테이블(`USERS`, `WORKSPACES` 등)은 `app/db/models.py`에 정의하지 않습니다.
+
+자세한 명령어는 [`docs/architecture.md`](docs/architecture.md#5-db-마이그레이션-alembic)를 참고하세요.
+
+### 5. 테스트
+```bash
+uv run pytest
+```
+
+### 6. 로컬 서버 실행
+```bash
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+- API Swagger 문서: `http://localhost:8000/docs`
 - 헬스체크: `GET /health`
 
-### 5. Docker로 실행
+### 7. Docker로 실행
 ```bash
 docker build -t devbridge-ai-engine .
 docker run --env-file .env -p 8000:8000 devbridge-ai-engine
 ```
-
-### 6. DB 마이그레이션 (Alembic)
-```bash
-alembic upgrade head
-```
-자세한 마이그레이션 명령어는 [`docs/architecture.md`](docs/architecture.md#5-db-마이그레이션-alembic) 참고.
