@@ -21,12 +21,14 @@ provider 자동 감지:
 
 import json
 import logging
+import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
 import httpx
 
 from app.config import get_settings
+from app.core.metrics import record_metric
 
 _ANTHROPIC_VERSION = "2023-06-01"
 logger = logging.getLogger(__name__)
@@ -44,6 +46,47 @@ class LLMUsage:
 # ---------------------------------------------------------------------------
 # 내부 헬퍼
 # ---------------------------------------------------------------------------
+
+def _record_llm_call(
+    *,
+    purpose: str,
+    model: str,
+    provider: str,
+    latency_ms: float,
+    prompt_tokens: int,
+    completion_tokens: int,
+    thoughts_tokens: int,
+    finish_reason: str | None,
+    parse_ok: bool,
+    error_type: str | None,
+    http_status: int | None,
+    streamed: bool,
+    ttft_ms: float | None = None,
+) -> None:
+    """LLM 호출 1건의 관측성 이벤트를 `llm_calls.jsonl`에 기록합니다.
+
+    chat_metrics(요청 단위)와 별도로, 호출 1건 단위로 튜닝용 세부 지표를 남깁니다.
+    payload에는 프롬프트/메시지/시스템 프롬프트/응답 원문을 절대 포함하지 않습니다.
+    """
+    record_metric(
+        "llm_calls",
+        {
+            "purpose": purpose,
+            "model": model,
+            "provider": provider,
+            "latency_ms": latency_ms,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "thoughts_tokens": thoughts_tokens,
+            "finish_reason": finish_reason,
+            "parse_ok": parse_ok,
+            "error_type": error_type,
+            "http_status": http_status,
+            "streamed": streamed,
+            "ttft_ms": ttft_ms,
+        },
+    )
+
 
 def _detect_provider(model: str) -> str:
     """모델명 prefix로 GMS provider를 자동 감지합니다."""
@@ -143,8 +186,14 @@ def _parse_response(provider: str, data: dict) -> tuple[str, dict]:
     """응답 JSON에서 텍스트와 토큰 사용량을 추출합니다.
 
     Returns:
-        (text, {"input_tokens": int, "output_tokens": int})
+        (text, {"input_tokens": int, "output_tokens": int,
+                "thoughts_tokens": int, "finish_reason": str | None})
         usage 키는 provider에 관계없이 통일된 형식으로 반환됩니다.
+        thoughts_tokens는 gemini thinking 모델의 추론 토큰(usageMetadata.thoughtsTokenCount)이며,
+        gemini의 output_tokens(=completion_tokens)에는 과금 기준에 맞춰 이미 합산되어 있습니다
+        (candidatesTokenCount + thoughtsTokenCount). anthropic/openai는 항상 0입니다.
+        finish_reason은 gemini candidates[0].finishReason / anthropic stop_reason /
+        openai choices[0].finish_reason입니다.
     """
     if provider == "anthropic":
         return (
@@ -152,6 +201,8 @@ def _parse_response(provider: str, data: dict) -> tuple[str, dict]:
             {
                 "input_tokens": data["usage"]["input_tokens"],
                 "output_tokens": data["usage"]["output_tokens"],
+                "thoughts_tokens": 0,
+                "finish_reason": data.get("stop_reason"),
             },
         )
     if provider == "openai":
@@ -160,6 +211,8 @@ def _parse_response(provider: str, data: dict) -> tuple[str, dict]:
             {
                 "input_tokens": data["usage"]["prompt_tokens"],
                 "output_tokens": data["usage"]["completion_tokens"],
+                "thoughts_tokens": 0,
+                "finish_reason": data["choices"][0].get("finish_reason"),
             },
         )
     # gemini
@@ -171,10 +224,24 @@ def _parse_response(provider: str, data: dict) -> tuple[str, dict]:
             text = parts[0].get("text", "")
 
     usage_metadata = data.get("usageMetadata", {})
+    candidates_tokens = usage_metadata.get("candidatesTokenCount", 0)
+    thoughts_tokens = usage_metadata.get("thoughtsTokenCount", 0)
+    finish_reason = candidates[0].get("finishReason") if candidates else None
     return text, {
         "input_tokens": usage_metadata.get("promptTokenCount", 0),
-        "output_tokens": usage_metadata.get("candidatesTokenCount", 0),
+        # 과금 기준(candidatesTokenCount + thoughtsTokenCount)에 맞춘 completion_tokens.
+        "output_tokens": candidates_tokens + thoughts_tokens,
+        "thoughts_tokens": thoughts_tokens,
+        "finish_reason": finish_reason,
     }
+
+
+async def _request_once(url: str, headers: dict, body: dict, timeout: float) -> dict:
+    """POST 요청 1회를 수행하고 응답 JSON을 반환합니다. (기록/측정은 호출부 책임)"""
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(url, headers=headers, json=body)
+        resp.raise_for_status()
+        return resp.json()
 
 
 # ---------------------------------------------------------------------------
@@ -191,21 +258,48 @@ async def call_main(
     provider = _detect_provider(settings.main_model)
     body = _build_body(provider, settings.main_model, messages, system_prompt, max_tokens)
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(
+    start = time.perf_counter()
+    prompt_tokens = completion_tokens = thoughts_tokens = 0
+    finish_reason: str | None = None
+    error_type: str | None = None
+    http_status: int | None = None
+    try:
+        data = await _request_once(
             _build_url(provider, settings.main_model, settings),
-            headers=_build_headers(provider, settings),
-            json=body,
+            _build_headers(provider, settings),
+            body,
+            120.0,
         )
-        resp.raise_for_status()
-        data = resp.json()
-
-    text, usage_raw = _parse_response(provider, data)
-    return text, LLMUsage(
-        model=settings.main_model,
-        prompt_tokens=usage_raw["input_tokens"],
-        completion_tokens=usage_raw["output_tokens"],
-    )
+        text, usage_raw = _parse_response(provider, data)
+        prompt_tokens = usage_raw["input_tokens"]
+        completion_tokens = usage_raw["output_tokens"]
+        thoughts_tokens = usage_raw["thoughts_tokens"]
+        finish_reason = usage_raw["finish_reason"]
+        return text, LLMUsage(
+            model=settings.main_model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+    except Exception as exc:
+        error_type = type(exc).__name__
+        if isinstance(exc, httpx.HTTPStatusError):
+            http_status = exc.response.status_code
+        raise
+    finally:
+        _record_llm_call(
+            purpose="main",
+            model=settings.main_model,
+            provider=provider,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            thoughts_tokens=thoughts_tokens,
+            finish_reason=finish_reason,
+            parse_ok=True,
+            error_type=error_type,
+            http_status=http_status,
+            streamed=False,
+        )
 
 
 async def call_main_stream(
@@ -222,36 +316,66 @@ async def call_main_stream(
 
     input_tokens = 0
     output_tokens = 0
+    finish_reason: str | None = None
+    start = time.perf_counter()
+    ttft_ms: float | None = None
+    error_type: str | None = None
+    http_status: int | None = None
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        async with client.stream("POST", url, headers=headers, json=body) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                payload = line[5:].strip()
-                if not payload:
-                    continue
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream("POST", url, headers=headers, json=body) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if not payload:
+                        continue
+                    try:
+                        data = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
 
-                event_type = data.get("type")
-                if event_type == "message_start":
-                    input_tokens = data["message"]["usage"].get("input_tokens", 0)
-                elif event_type == "content_block_delta":
-                    delta = data.get("delta", {})
-                    if delta.get("type") == "text_delta":
-                        yield delta.get("text", ""), None
-                elif event_type == "message_delta":
-                    output_tokens = data.get("usage", {}).get("output_tokens", 0)
+                    event_type = data.get("type")
+                    if event_type == "message_start":
+                        input_tokens = data["message"]["usage"].get("input_tokens", 0)
+                    elif event_type == "content_block_delta":
+                        delta = data.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            if ttft_ms is None:
+                                ttft_ms = (time.perf_counter() - start) * 1000
+                            yield delta.get("text", ""), None
+                    elif event_type == "message_delta":
+                        output_tokens = data.get("usage", {}).get("output_tokens", 0)
+                        finish_reason = data.get("delta", {}).get("stop_reason")
 
-    yield None, LLMUsage(
-        model=settings.main_model,
-        prompt_tokens=input_tokens,
-        completion_tokens=output_tokens,
-    )
+        yield None, LLMUsage(
+            model=settings.main_model,
+            prompt_tokens=input_tokens,
+            completion_tokens=output_tokens,
+        )
+    except Exception as exc:
+        error_type = type(exc).__name__
+        if isinstance(exc, httpx.HTTPStatusError):
+            http_status = exc.response.status_code
+        raise
+    finally:
+        _record_llm_call(
+            purpose="main_stream",
+            model=settings.main_model,
+            provider=provider,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            prompt_tokens=input_tokens,
+            completion_tokens=output_tokens,
+            thoughts_tokens=0,
+            finish_reason=finish_reason,
+            parse_ok=True,
+            error_type=error_type,
+            http_status=http_status,
+            streamed=True,
+            ttft_ms=ttft_ms,
+        )
 
 
 async def call_rewrite(
@@ -267,21 +391,48 @@ async def call_rewrite(
     provider = _detect_provider(settings.rewrite_model)
     body = _build_body(provider, settings.rewrite_model, messages, system_prompt, max_tokens)
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
+    start = time.perf_counter()
+    prompt_tokens = completion_tokens = thoughts_tokens = 0
+    finish_reason: str | None = None
+    error_type: str | None = None
+    http_status: int | None = None
+    try:
+        data = await _request_once(
             _build_url(provider, settings.rewrite_model, settings),
-            headers=_build_headers(provider, settings),
-            json=body,
+            _build_headers(provider, settings),
+            body,
+            30.0,
         )
-        resp.raise_for_status()
-        data = resp.json()
-
-    text, usage_raw = _parse_response(provider, data)
-    return text, LLMUsage(
-        model=settings.rewrite_model,
-        prompt_tokens=usage_raw["input_tokens"],
-        completion_tokens=usage_raw["output_tokens"],
-    )
+        text, usage_raw = _parse_response(provider, data)
+        prompt_tokens = usage_raw["input_tokens"]
+        completion_tokens = usage_raw["output_tokens"]
+        thoughts_tokens = usage_raw["thoughts_tokens"]
+        finish_reason = usage_raw["finish_reason"]
+        return text, LLMUsage(
+            model=settings.rewrite_model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+    except Exception as exc:
+        error_type = type(exc).__name__
+        if isinstance(exc, httpx.HTTPStatusError):
+            http_status = exc.response.status_code
+        raise
+    finally:
+        _record_llm_call(
+            purpose="rewrite",
+            model=settings.rewrite_model,
+            provider=provider,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            thoughts_tokens=thoughts_tokens,
+            finish_reason=finish_reason,
+            parse_ok=True,
+            error_type=error_type,
+            http_status=http_status,
+            streamed=False,
+        )
 
 
 _GROUNDING_SYSTEM_PROMPT = """\
@@ -352,58 +503,137 @@ async def call_grounding(prompt: str) -> tuple[dict, LLMUsage]:
         response_schema=grounding_schema,
     )
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            _build_url(provider, settings.grounding_model, settings),
-            headers=_build_headers(provider, settings),
-            json=body,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-    candidates = data.get("candidates") or []
-    finish_reason = candidates[0].get("finishReason") if candidates else None
-    thoughts_tokens = data.get("usageMetadata", {}).get("thoughtsTokenCount", 0)
-    if finish_reason == "MAX_TOKENS" or thoughts_tokens > 0:
-        logger.warning(
-            "call_grounding: thinking/truncation 감지 model=%s finish=%s thoughts=%d",
-            settings.grounding_model,
-            finish_reason,
-            thoughts_tokens,
-        )
-
-    text, usage_raw = _parse_response(provider, data)
-    text = text.strip()
-    usage = LLMUsage(
-        model=settings.grounding_model,
-        prompt_tokens=usage_raw["input_tokens"],
-        completion_tokens=usage_raw["output_tokens"],
-    )
-
-    if text.startswith("```"):
-        lines = text.splitlines()
-        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-
+    start = time.perf_counter()
+    prompt_tokens = completion_tokens = thoughts_tokens = 0
+    finish_reason: str | None = None
+    error_type: str | None = None
+    http_status: int | None = None
+    parse_ok = True
     try:
-        return json.loads(text), usage
-    except json.JSONDecodeError:
-        logger.warning("call_grounding: JSON 파싱 실패. 응답: %r", text)
-        return {}, usage
+        data = await _request_once(
+            _build_url(provider, settings.grounding_model, settings),
+            _build_headers(provider, settings),
+            body,
+            30.0,
+        )
+        text, usage_raw = _parse_response(provider, data)
+        prompt_tokens = usage_raw["input_tokens"]
+        completion_tokens = usage_raw["output_tokens"]
+        thoughts_tokens = usage_raw["thoughts_tokens"]
+        finish_reason = usage_raw["finish_reason"]
+        if finish_reason == "MAX_TOKENS" or thoughts_tokens > 0:
+            logger.warning(
+                "call_grounding: thinking/truncation 감지 model=%s finish=%s thoughts=%d",
+                settings.grounding_model,
+                finish_reason,
+                thoughts_tokens,
+            )
+
+        text = text.strip()
+        usage = LLMUsage(
+            model=settings.grounding_model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+
+        if text.startswith("```"):
+            lines = text.splitlines()
+            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+
+        try:
+            return json.loads(text), usage
+        except json.JSONDecodeError:
+            logger.warning("call_grounding: JSON 파싱 실패. 응답: %r", text)
+            parse_ok = False
+            return {}, usage
+    except Exception as exc:
+        error_type = type(exc).__name__
+        if isinstance(exc, httpx.HTTPStatusError):
+            http_status = exc.response.status_code
+        raise
+    finally:
+        _record_llm_call(
+            purpose="grounding",
+            model=settings.grounding_model,
+            provider=provider,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            thoughts_tokens=thoughts_tokens,
+            finish_reason=finish_reason,
+            parse_ok=parse_ok,
+            error_type=error_type,
+            http_status=http_status,
+            streamed=False,
+        )
 
 
 async def call_structured(
     messages: list[dict],
     system_prompt: str,
     max_tokens: int = 1024,
+    purpose: str = "structured",
 ) -> dict:
     """MAIN_MODEL로 JSON 구조화 응답을 생성합니다.
 
     system_prompt에서 반드시 JSON 형식 응답을 명시해야 합니다.
     마크다운 코드 블록(```json...```)이 포함된 경우 자동으로 제거합니다.
+
+    purpose: llm_calls 이벤트 분류용(기본 "structured"). 호출부가 자신의 용도
+    (예: "document_analysis", "commit_analysis", "workspace_summary")를 전달합니다.
+    반환값/시그니처는 변경하지 않으며, 토큰 사용량은 반환하지 않고 llm_calls
+    이벤트로만 노출합니다.
     """
-    text, _ = await call_main(messages, system_prompt, max_tokens=max_tokens)
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-    return json.loads(text)
+    settings = get_settings()
+    provider = _detect_provider(settings.main_model)
+    body = _build_body(provider, settings.main_model, messages, system_prompt, max_tokens)
+
+    start = time.perf_counter()
+    prompt_tokens = completion_tokens = thoughts_tokens = 0
+    finish_reason: str | None = None
+    error_type: str | None = None
+    http_status: int | None = None
+    parse_ok = True
+    try:
+        data = await _request_once(
+            _build_url(provider, settings.main_model, settings),
+            _build_headers(provider, settings),
+            body,
+            120.0,
+        )
+        text, usage_raw = _parse_response(provider, data)
+        prompt_tokens = usage_raw["input_tokens"]
+        completion_tokens = usage_raw["output_tokens"]
+        thoughts_tokens = usage_raw["thoughts_tokens"]
+        finish_reason = usage_raw["finish_reason"]
+
+        text = text.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            parse_ok = False
+            raise
+    except Exception as exc:
+        error_type = type(exc).__name__
+        if isinstance(exc, httpx.HTTPStatusError):
+            http_status = exc.response.status_code
+        raise
+    finally:
+        _record_llm_call(
+            purpose=purpose,
+            model=settings.main_model,
+            provider=provider,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            thoughts_tokens=thoughts_tokens,
+            finish_reason=finish_reason,
+            parse_ok=parse_ok,
+            error_type=error_type,
+            http_status=http_status,
+            streamed=False,
+        )
