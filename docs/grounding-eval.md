@@ -158,3 +158,52 @@ final = (top_similarity >= threshold) AND effective_llm_is_groundable
 - 개선 여지는 LLM 판정 쪽: 판정 프롬프트에 "질문의 구체적 사실(수치·주체·절차)이 컨텍스트에 명시되어 있을 때만 true" 규칙과 반례 few-shot을 추가하는 후속 WP를 제안한다.
 - 판정 입력(약 2k 토큰)이 호출 비용의 대부분이므로, 컨텍스트를 top-3 또는 청크 요약으로 줄이는 실험도 같은 WP에서 비교한다.
 - 매 호출 thinking 1~2 토큰으로 `call_grounding` 경고가 과다하게 출력된다. 경고 조건을 `MAX_TOKENS`일 때로 좁히는 것을 후속으로 검토한다.
+
+## 2회차: 판정 변형 비교 (G1)
+
+1회차 권고(판정 프롬프트 강화, 컨텍스트 축소)를 같은 40건 데이터셋에서 비교하기 위한
+도구입니다. **기본 설정은 변경되지 않았으며(`grounding_prompt_version=v1`,
+`grounding_judge_top_k=5`, `grounding_judge_max_chunk_chars=0`), 운영 기본값 전환은 결과
+검토 후 별도 승인이 필요합니다.**
+
+### 변형 정의 (`scripts/eval/grounding_eval.py::VARIANTS`)
+
+| variant | 프롬프트 | 판정 청크 수(top_k) | 청크 길이 상한 |
+| --- | --- | --- | --- |
+| `baseline` | `v1` (현행) | 5 | 없음 |
+| `strict` | `v2-strict` | 5 | 없음 |
+| `top3` | `v1` | 3 | 없음 |
+| `strict_top3` | `v2-strict` | 3 | 없음 |
+| `strict_top3_cap` | `v2-strict` | 3 | 600자 |
+
+- 프롬프트는 `app/core/rag/grounding_prompts.py`(`v2-strict`는 규칙 3을 "질문이 요구하는
+  구체적 사실이 컨텍스트에 명시된 경우에만 true"로 강화하고 반례 few-shot 2개 추가).
+- 검색은 케이스당 1회(top_k=5)만 수행하고, 변형마다 판정 프롬프트를 달리 만들어
+  `call_grounding`을 호출합니다(비용은 변형 수에 비례).
+
+### 실행 방법
+
+```bash
+# 라이브 수집 (비용 발생, RUN_LIVE_LLM=1 + GMS_API_KEY 필요). --variants 기본값은 전체
+RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live
+RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline,strict
+
+# 오프라인 비교 (API 호출 없음). 임계치 기본값은 settings.grounding_similarity_threshold(0.35)
+python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-{timestamp}.jsonl
+python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-{timestamp}.jsonl --threshold 0.35
+```
+
+캐시 레코드에는 `variant`, `prompt_chars` 필드가 추가되며, `variant`가 없는 기존(A4)
+캐시는 `baseline`으로 읽습니다.
+
+### 출력 표
+
+- baseline 임계치 스윕(기존과 동일)
+- 변형 비교: variant / accuracy / not-gr precision / not-gr recall / not-gr F1 /
+  groundable 오차단(expected groundable인데 최종 false인 건수·비율) / 평균 prompt_tokens /
+  평균 latency_ms / 파싱 실패율
+- 변형 간 판정이 갈린 케이스 표(id, category, expected, variant별 정답 여부)
+
+### 결과
+
+미실행
