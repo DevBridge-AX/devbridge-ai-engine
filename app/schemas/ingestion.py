@@ -7,8 +7,13 @@ background task.
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+# 데이터소스 민감도 (docs/access-control.md §3.2). restricted 청크는
+# ChatRequest.can_view_restricted=True인 사용자에게만 검색된다.
+SensitivityLevel = Literal["normal", "restricted"]
 
 
 class DocumentIngestionRequest(BaseModel):
@@ -22,6 +27,7 @@ class DocumentIngestionRequest(BaseModel):
     title: str
     doc_type: str
     file_path: str
+    sensitivity_level: SensitivityLevel = "normal"
 
 
 class GitChangedFileData(BaseModel):
@@ -60,12 +66,16 @@ class GitIngestionRequest(BaseModel):
     source_id: str | None = None
     data_source_id: str | None = None
     commits: list[CommitData]
+    sensitivity_level: SensitivityLevel = "normal"
 
 
 class RetryIngestionRequest(BaseModel):
     """Request schema for POST /api/ingestion/document/retry."""
 
     document_id: str
+    # 재인덱싱 시 청크에 다시 스냅샷할 민감도. DATA_SOURCES.sensitivity_level 컬럼 도입 전까지는
+    # Spring이 전달하며, 미전달 시 normal.
+    sensitivity_level: SensitivityLevel = "normal"
 
 
 class OwnerAnswerIngestionRequest(BaseModel):

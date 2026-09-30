@@ -40,8 +40,13 @@ async def ingest_git_commits(
     workspace_id: str,
     source_id: str | None,
     commits: list[CommitData],
+    sensitivity_level: str = "normal",
 ) -> None:
-    """Background task for Git commit indexing."""
+    """Background task for Git commit indexing.
+
+    Git 청크는 task와 무관한 워크스페이스 공용 지식이라 task_id=NULL이며,
+    데이터소스 민감도만 스냅샷합니다(docs/access-control.md §3.2).
+    """
     with SessionLocal() as db:
         try:
             total_tokens, embedding_model = await _run(
@@ -49,6 +54,7 @@ async def ingest_git_commits(
                 workspace_id=workspace_id,
                 source_id=source_id,
                 commits=commits,
+                sensitivity_level=sensitivity_level,
             )
 
             if total_tokens > 0:
@@ -65,6 +71,7 @@ async def _run(
     workspace_id: str,
     source_id: str | None,
     commits: list[CommitData],
+    sensitivity_level: str = "normal",
 ) -> tuple[int, str]:
     settings = get_settings()
     vector_store = get_vector_store()
@@ -90,6 +97,7 @@ async def _run(
             commit=commit,
             commit_text=commit_text,
             vector_store=vector_store,
+            sensitivity_level=sensitivity_level,
         )
 
         total_tokens += embedding_tokens
@@ -184,6 +192,7 @@ async def _index_commit_if_needed(
     commit: CommitData,
     commit_text: str,
     vector_store,
+    sensitivity_level: str = "normal",
 ) -> tuple[str | None, int, str | None]:
     existing_chunks = db.execute(
         select(DocumentChunk).where(
@@ -230,6 +239,7 @@ async def _index_commit_if_needed(
             embedding_model=result.embedding_model,
             embedding_model_version=result.embedding_model_version,
             vector_id=vector_id,
+            sensitivity_level=sensitivity_level,
         )
 
         db.add(doc_chunk)

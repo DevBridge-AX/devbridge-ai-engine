@@ -192,6 +192,12 @@ class DocumentChunk(Base):
     embedding_model: Mapped[str] = mapped_column(String(100), nullable=False)
     embedding_model_version: Mapped[str] = mapped_column(String(50), nullable=False)
     vector_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    # 접근 제어 스냅샷 (docs/access-control.md §3.3). 인덱싱 시점 값을 복사해 두며,
+    # task 배정/민감도가 바뀌어도 재인덱싱 전까지는 반영되지 않는다.
+    task_id: Mapped[str | None] = mapped_column(String(36), index=True, nullable=True)
+    sensitivity_level: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="normal", server_default="normal"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

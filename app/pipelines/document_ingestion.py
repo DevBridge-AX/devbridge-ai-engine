@@ -38,11 +38,24 @@ async def ingest_document(
     knowledge_document_id: str,
     file_path: str,
     doc_type: str,
+    task_id: str | None = None,
+    sensitivity_level: str = "normal",
 ) -> None:
-    """문서 인덱싱 백그라운드 태스크. 완료 후 analysis_status를 indexed/failed로 갱신합니다."""
+    """문서 인덱싱 백그라운드 태스크. 완료 후 analysis_status를 indexed/failed로 갱신합니다.
+
+    task_id/sensitivity_level은 청크에 접근 제어 스냅샷으로 복사됩니다(docs/access-control.md §3.3).
+    """
     with SessionLocal() as db:
         try:
-            await _run(db, workspace_id, knowledge_document_id, file_path, doc_type)
+            await _run(
+                db,
+                workspace_id,
+                knowledge_document_id,
+                file_path,
+                doc_type,
+                task_id=task_id,
+                sensitivity_level=sensitivity_level,
+            )
             db.execute(
                 update(KnowledgeDocument)
                 .where(KnowledgeDocument.id == knowledge_document_id)
@@ -68,6 +81,8 @@ async def _run(
     knowledge_document_id: str,
     file_path: str,
     doc_type: str,
+    task_id: str | None = None,
+    sensitivity_level: str = "normal",
 ) -> None:
     text = Path(file_path).read_text(encoding="utf-8", errors="replace")
     chunks = chunk_document(text, doc_type)
@@ -90,6 +105,8 @@ async def _run(
             embedding_model=result.embedding_model,
             embedding_model_version=result.embedding_model_version,
             vector_id=vector_id,
+            task_id=task_id,
+            sensitivity_level=sensitivity_level,
         )
         db.add(doc_chunk)
         pending.append((doc_chunk, embedding, vector_id))

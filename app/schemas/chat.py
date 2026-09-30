@@ -38,6 +38,10 @@ class ChatRequest(BaseModel):
     workspace_id: str
     user_id: str
     role: PersonaRole
+    # 접근 제어 (docs/access-control.md §5). Spring이 매 요청 계산해 전달하며,
+    # 미전달 시 task 제한 없음 + restricted 소스 제외(= 현행 데이터 기준 기존과 동일).
+    accessible_task_ids: Optional[list[str]] = None
+    can_view_restricted: bool = False
 
 
 class Citation(BaseModel):

@@ -1,8 +1,9 @@
-# RAG 데이터 접근 경계 설계 (초안 — 미구현)
+# RAG 데이터 접근 경계 설계
 
-> **상태**: 설계 문서만 존재, 코드에는 아직 반영되지 않았습니다. 실제 구현 전에
-> `backend`(Spring) 쪽과 계약을 맞추는 논의가 필요합니다. 이 문서는 "왜 이 구조가
-> 이 프로젝트에 맞는지" 근거를 남기는 것이 목적입니다.
+> **상태 (2026-09-30)**: **Phase 1 구현 완료** — `document_chunks` 스냅샷 컬럼, 인덱싱
+> 요청 `sensitivity_level`, `ChatRequest` 접근 제어 필드, retriever 사후 필터가 반영되었습니다.
+> Spring이 값을 보내기 전까지는 기존과 동일하게 동작합니다(§5). 실제 격리 효과는
+> backend Phase 2(§7) 완료 후 발생합니다. 구현 확정 사항은 §10에 정리했습니다.
 
 ## 1. 문제 정의
 
@@ -165,3 +166,37 @@ overfetch (vector + BM25, 현재 top_k * 3)
 2. **Phase 2** (backend 레포): task 배정/RBAC 계산 로직 구현, 실제 값 전달 시작.
 3. **Phase 3** (이 레포): retriever 필터를 "느슨한 기본값"에서 "실제 강제"로 전환,
    테스트로 교차 접근 시나리오 검증.
+
+## 10. Phase 1 구현 확정 사항 (2026-09-30)
+
+| 항목 | 확정 내용 | 위치 |
+| --- | --- | --- |
+| 민감도 값 | `normal` / `restricted` 2단계, 기본 `normal` | `app/schemas/ingestion.py` `SensitivityLevel` |
+| 청크 스냅샷 | `document_chunks.task_id`(nullable, index), `sensitivity_level`(NOT NULL, default `normal`) | `app/db/models.py`, alembic `c4e8a1f0b2d7` |
+| 문서 청크 | `KNOWLEDGE_DOCUMENTS.task_id` + 요청 `sensitivity_level` 복사 | `app/pipelines/document_ingestion.py` |
+| Git 청크 | `task_id=NULL`(워크스페이스 공용), 요청 `sensitivity_level` 복사 | `app/pipelines/git_ingestion.py` |
+| Q&A(owner-answer) 청크 | `task_id=NULL`, `normal` | 기본값 |
+| task 미지정 청크 | 워크스페이스 전원 조회 허용 | `retriever._allowed_chunk_ids` |
+| `ChatRequest` | `accessible_task_ids: list[str] \| None = None`, `can_view_restricted: bool = False` | `app/schemas/chat.py` |
+| 필터 위치 | overfetch(×3) 후보를 **RRF 병합 전** 1회 쿼리로 필터 → 병합 → top_k | `app/core/rag/retriever.py` |
+
+### 민감도 전달 경로 (임시)
+
+§3.2는 민감도를 `DATA_SOURCES.sensitivity_level`에 두는 설계지만, 이 테이블은 Spring과
+스키마를 공유하므로 컬럼 추가는 backend DDL 합의가 필요합니다. 합의 전까지는
+**인덱싱 요청 payload**(`/ingestion/document`, `/ingestion/git`, `/ingestion/document/retry`의
+`sensitivity_level`)로 받습니다. 컬럼이 도입되면 인덱싱 시 조회로 전환하며, 청크 스냅샷
+결과는 동일합니다.
+
+### 하위호환
+
+- Spring이 새 필드를 보내지 않으면: task 제한 없음 + restricted 제외. 기존 청크는 모두
+  `normal`/`NULL`로 마이그레이션되므로 **검색 결과는 기존과 동일**합니다.
+- `retrieve(access=None)`(채팅 외 호출)은 필터링을 하지 않습니다.
+
+### 남은 과제
+
+- 필터로 후보가 과도하게 걸러져 top_k 미만이 되는 경우의 재조회 루프는 미구현
+  (overfetch ×3 유지, 실측 후 판단).
+- task 배정·민감도 변경은 재인덱싱 전까지 반영되지 않습니다(§3.3 트레이드오프).
+
