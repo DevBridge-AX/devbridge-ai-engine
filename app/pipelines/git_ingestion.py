@@ -10,11 +10,16 @@ Important behavior:
 - If GIT_COMMITS already has the commit, reuse that row instead of skipping.
 - If document_chunks already exist for the commit, do not duplicate vectors.
 - If analysis does not exist or is not completed, create/update analysis result.
+
+관측성(R-4): 커밋 수, 신규/스킵 청크 수, 임베딩 소요 시간(embed_ms), 전체 소요 시간
+(total_ms), 실패 여부를 app.core.metrics.record_metric("git_ingestion", ...)으로
+기록합니다. 커밋 원문/메시지는 payload에 포함하지 않습니다.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -24,6 +29,7 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.core.embeddings.embedder import embed_texts
 from app.core.llm.provider import call_structured
+from app.core.metrics import record_metric
 from app.core.rag.bm25_index import get_bm25_manager
 from app.core.rag.chunker import chunk_document
 from app.db.models import ChunkSourceType, DocumentChunk, GitCommit, GitCommitAnalysis
@@ -47,9 +53,11 @@ async def ingest_git_commits(
     Git 청크는 task와 무관한 워크스페이스 공용 지식이라 task_id=NULL이며,
     데이터소스 민감도만 스냅샷합니다(docs/access-control.md §3.2).
     """
+    total_start = time.perf_counter()
+
     with SessionLocal() as db:
         try:
-            total_tokens, embedding_model = await _run(
+            total_tokens, embedding_model, new_chunk_count, skipped_chunk_count, embed_ms = await _run(
                 db=db,
                 workspace_id=workspace_id,
                 source_id=source_id,
@@ -61,9 +69,20 @@ async def ingest_git_commits(
                 log_embedding_usage(db, workspace_id, embedding_model, total_tokens)
 
             db.commit()
-        except Exception:
+
+            _record_git_ingestion_metric(
+                total_start, workspace_id, len(commits),
+                new_chunk_count=new_chunk_count, skipped_chunk_count=skipped_chunk_count,
+                embed_ms=embed_ms, result="COMPLETED", error_type=None,
+            )
+        except Exception as exc:
             logger.exception("git_ingestion failed: workspace_id=%s", workspace_id)
             db.rollback()
+            _record_git_ingestion_metric(
+                total_start, workspace_id, len(commits),
+                new_chunk_count=None, skipped_chunk_count=None, embed_ms=None,
+                result="FAILED", error_type=type(exc).__name__,
+            )
 
 
 async def _run(
@@ -72,12 +91,15 @@ async def _run(
     source_id: str | None,
     commits: list[CommitData],
     sensitivity_level: str = "normal",
-) -> tuple[int, str]:
+) -> tuple[int, str, int, int, float]:
     settings = get_settings()
     vector_store = get_vector_store()
 
     total_tokens = 0
     last_model = settings.embedding_model
+    new_chunk_count = 0
+    skipped_chunk_count = 0
+    embed_ms_total = 0.0
 
     for commit in commits:
         git_commit = await _get_or_create_git_commit(
@@ -90,7 +112,14 @@ async def _run(
 
         commit_text = _build_commit_text(commit)
 
-        primary_vector_id, embedding_tokens, embedding_model = await _index_commit_if_needed(
+        (
+            primary_vector_id,
+            embedding_tokens,
+            embedding_model,
+            commit_new_chunks,
+            commit_skipped_chunks,
+            commit_embed_ms,
+        ) = await _index_commit_if_needed(
             db=db,
             workspace_id=workspace_id,
             git_commit=git_commit,
@@ -103,6 +132,9 @@ async def _run(
         total_tokens += embedding_tokens
         if embedding_model:
             last_model = embedding_model
+        new_chunk_count += commit_new_chunks
+        skipped_chunk_count += commit_skipped_chunks
+        embed_ms_total += commit_embed_ms
 
         analysis = await _analyze_commit(commit=commit, commit_text=commit_text)
         _upsert_commit_analysis(
@@ -115,7 +147,33 @@ async def _run(
 
     get_bm25_manager().invalidate(workspace_id)
 
-    return total_tokens, last_model
+    return total_tokens, last_model, new_chunk_count, skipped_chunk_count, embed_ms_total
+
+
+def _record_git_ingestion_metric(
+    total_start: float,
+    workspace_id: str,
+    commit_count: int,
+    *,
+    new_chunk_count: int | None,
+    skipped_chunk_count: int | None,
+    embed_ms: float | None,
+    result: str,
+    error_type: str | None,
+) -> None:
+    """Git 커밋 인덱싱 1건(배치)의 지표를 기록합니다. 커밋 메시지/diff는 포함하지 않습니다."""
+    total_ms = (time.perf_counter() - total_start) * 1000
+    payload = {
+        "workspace_id": workspace_id,
+        "commit_count": commit_count,
+        "new_chunk_count": new_chunk_count,
+        "skipped_chunk_count": skipped_chunk_count,
+        "embed_ms": embed_ms,
+        "total_ms": total_ms,
+        "result": result,
+        "error_type": error_type,
+    }
+    record_metric("git_ingestion", payload)
 
 
 async def _get_or_create_git_commit(
@@ -193,7 +251,8 @@ async def _index_commit_if_needed(
     commit_text: str,
     vector_store,
     sensitivity_level: str = "normal",
-) -> tuple[str | None, int, str | None]:
+) -> tuple[str | None, int, str | None, int, int, float]:
+    """반환: (primary_vector_id, embedding_tokens, embedding_model, new_chunk_count, skipped_chunk_count, embed_ms)."""
     existing_chunks = db.execute(
         select(DocumentChunk).where(
             DocumentChunk.workspace_id == workspace_id,
@@ -207,7 +266,7 @@ async def _index_commit_if_needed(
             "git_ingestion: commit chunks already exist. commit_hash=%s",
             commit.commit_hash,
         )
-        return existing_chunks[0].vector_id, 0, None
+        return existing_chunks[0].vector_id, 0, None, 0, len(existing_chunks), 0.0
 
     chunks = chunk_document(commit_text, doc_type="git_diff")
     if not chunks:
@@ -215,9 +274,11 @@ async def _index_commit_if_needed(
             "git_ingestion: no chunks generated. commit_hash=%s",
             commit.commit_hash,
         )
-        return None, 0, None
+        return None, 0, None, 0, 0, 0.0
 
+    embed_start = time.perf_counter()
     result = await embed_texts([chunk.content for chunk in chunks])
+    embed_ms = (time.perf_counter() - embed_start) * 1000
 
     pending: list[tuple[DocumentChunk, list[float], str]] = []
 
@@ -263,7 +324,7 @@ async def _index_commit_if_needed(
 
     primary_vector_id = pending[0][2] if pending else None
 
-    return primary_vector_id, result.total_tokens, result.embedding_model
+    return primary_vector_id, result.total_tokens, result.embedding_model, len(chunks), 0, embed_ms
 
 
 def _build_commit_text(commit: CommitData) -> str:

@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from app.core import metrics
 from app.db.models import DocumentChunk
 from app.pipelines import document_ingestion
 from app.schemas.ingestion import (
@@ -54,6 +55,10 @@ def patched_pipeline(monkeypatch, tmp_path):
         lambda: SimpleNamespace(invalidate=lambda workspace_id: None),
     )
     monkeypatch.setattr(document_ingestion, "log_embedding_usage", lambda *a, **kw: None)
+    # 이 테스트는 접근 제어 스냅샷만 검증하므로 metrics_dir를 tmp_path로 돌려 레포에 파일이 남지 않게 한다.
+    monkeypatch.setattr(
+        metrics, "get_settings", lambda: SimpleNamespace(metrics_enabled=True, metrics_dir=str(tmp_path / "metrics"))
+    )
 
     doc = tmp_path / "doc.md"
     doc.write_text("# 제목\n\n첫 번째 단락입니다.\n\n## 소제목\n\n두 번째 단락입니다.", encoding="utf-8")
