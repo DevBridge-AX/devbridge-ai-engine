@@ -250,7 +250,12 @@ is_groundable / confidence (LLM structured output, 최종 판단)
 }
 ```
 
-- PII 스크러빙 포함
+- 입력은 Spring이 `POST /api/training-data/export` payload(`workspace_id`,
+  `dataset_version`, `records[]`)로 전달합니다. 출력은
+  `{TRAINING_DATA_DIR}/{workspace_id}/{dataset_version}.jsonl`이며 동일 버전은
+  덮어씁니다. 응답: `path`, `record_count`, `scrubbed_field_count`.
+- PII 스크러빙 포함 (`app/core/utils/pii.py`: 이메일/전화/주민번호/IPv4/URL, 이름은 제외).
+  `user_id`는 받지도 기록하지도 않습니다.
 - `dataset_version` 기록
 - `is_faq` / `owner_verified` 등 `OWNER_CONFIRMATIONS` 관련 값은 Spring이 전달한
   데이터를 기준으로 채우며, 이 레포가 해당 테이블을 직접 조회하지 않습니다.
