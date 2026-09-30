@@ -316,6 +316,7 @@ async def call_main_stream(
 
     input_tokens = 0
     output_tokens = 0
+    finish_reason: str | None = None
     start = time.perf_counter()
     ttft_ms: float | None = None
     error_type: str | None = None
@@ -347,6 +348,7 @@ async def call_main_stream(
                             yield delta.get("text", ""), None
                     elif event_type == "message_delta":
                         output_tokens = data.get("usage", {}).get("output_tokens", 0)
+                        finish_reason = data.get("delta", {}).get("stop_reason")
 
         yield None, LLMUsage(
             model=settings.main_model,
@@ -367,7 +369,7 @@ async def call_main_stream(
             prompt_tokens=input_tokens,
             completion_tokens=output_tokens,
             thoughts_tokens=0,
-            finish_reason=None,
+            finish_reason=finish_reason,
             parse_ok=True,
             error_type=error_type,
             http_status=http_status,

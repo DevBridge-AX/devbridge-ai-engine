@@ -172,6 +172,28 @@ class TestCallMainStreamRecordsOnce:
         assert record["prompt_tokens"] == 42
         assert record["completion_tokens"] == 7
 
+    async def test_stream_records_finish_reason(self, mock_transport, metrics_tmp_dir):
+        events = [
+            {"type": "message_start", "message": {"usage": {"input_tokens": 42}}},
+            {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "안녕"}},
+            {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "하세요"}},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 7}},
+        ]
+        sse_body = "".join(f"data: {json.dumps(e)}\n\n" for e in events)
+
+        mock_transport(
+            lambda req: httpx.Response(
+                200, content=sse_body.encode("utf-8"), headers={"content-type": "text/event-stream"}
+            )
+        )
+
+        async for _ in call_main_stream([{"role": "user", "content": "질문"}], "system"):
+            pass
+
+        records = _read_records(metrics_tmp_dir, "llm_calls")
+        assert len(records) == 1
+        assert records[0]["finish_reason"] == "end_turn"
+
 
 class TestCallGroundingParseFailure:
 
