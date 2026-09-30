@@ -11,6 +11,16 @@ LLM 2차 판정을 라벨셋(scripts/eval/datasets/grounding_cases.jsonl)으로 
   API/DB 호출이 없어 tests/test_grounding_eval_metrics.py가 합성 레코드로 단위 테스트합니다.
 - 라이브 수집(CLI --live): 실 GMS API를 호출합니다(비용 발생). 아래 CLI 사용법을 참고하세요.
 
+사용법:
+    # 1) 라이브 수집 (실 GMS API 호출, 비용 발생) — tmp 워크스페이스를 시드하고
+    #    케이스마다 retriever.retrieve() + (임계치 무관) call_grounding()을 호출해
+    #    결과를 캐시 jsonl로 저장합니다.
+    RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live
+    RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --limit 5   # 스모크용 소량 실행
+
+    # 2) 오프라인 스윕 (API 호출 없음) — 캐시된 결과로 임계치 0.20~0.60을 스윕합니다.
+    python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-20260930-120000.jsonl
+
 캐시 레코드 스키마(jsonl 1줄 = 케이스 1건):
     {id, category, expected_groundable, top_similarity, llm_is_groundable,
      llm_confidence, parse_ok, fallback_reason, latency_ms, prompt_tokens,
@@ -25,7 +35,12 @@ fallback_reason만 남음). compute_metrics()는 이 fallback 레코드를 실�
 """
 
 import argparse
+import asyncio
 import json
+import sys
+import tempfile
+import time
+from datetime import datetime
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -291,15 +306,134 @@ def render_sweep_markdown(records: list[dict], thresholds: list[float] | None = 
 
 
 # ---------------------------------------------------------------------------
-# CLI (--from-cache만 우선 제공. --live 라이브 수집은 뒤이은 커밋에서 추가됩니다.)
+# 라이브 수집 (실 GMS API 호출) — CLI에서만 사용, 순수 함수와 분리
+# ---------------------------------------------------------------------------
+
+async def _collect_records(dataset_path: Path, limit: int | None) -> list[dict]:
+    """tmp 워크스페이스를 시드하고 케이스마다 retrieve + (임계치 무관) call_grounding을
+    호출해 결과 레코드를 만듭니다. RUN_LIVE_LLM 게이트는 호출부(main)의 책임입니다.
+
+    tests/live/conftest.py::live_env/seeded_workspace와 동일한 패턴(tmp
+    VECTOR_STORE_PATH/METRICS_DIR + get_settings/get_vector_store 캐시 초기화)을
+    사용합니다.
+    """
+    import os
+
+    from app.config import get_settings
+    from app.core.llm import provider as llm
+    from app.core.rag import retriever
+    from app.core.rag.grounding import build_grounding_prompt
+    from app.db.vector_store import get_vector_store
+    from scripts.eval.seed import seed_workspace_async
+
+    cases = load_dataset(dataset_path)
+    if limit is not None:
+        cases = cases[:limit]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        vector_store_path = tmp_path / "vector_store"
+        metrics_dir = tmp_path / "metrics"
+        vector_store_path.mkdir(parents=True, exist_ok=True)
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+
+        os.environ["VECTOR_STORE_PATH"] = str(vector_store_path)
+        os.environ["METRICS_DIR"] = str(metrics_dir)
+        get_settings.cache_clear()
+        get_vector_store.cache_clear()
+
+        db, workspace_id = await seed_workspace_async(tmp_path)
+        try:
+            records: list[dict] = []
+            for case in cases:
+                # 참고: history가 있는 케이스라도 query_rewriter는 호출하지 않고 question
+                # 원문을 그대로 검색/판정에 사용합니다. 이는 app/core/rag/grounding.py::
+                # assess()의 실제 입력(request.content, 항상 원문)과 동일하며, retrieve()에
+                # rewritten_query를 쓰는 부분(A5 범위)은 이 스크립트에서 재현하지 않습니다.
+                question = case["question"]
+                chunks = await retriever.retrieve(question, workspace_id, db, top_k=5)
+                top_similarity = max((c.similarity_score for c in chunks), default=0.0)
+
+                prompt = build_grounding_prompt(chunks, question)
+
+                start = time.perf_counter()
+                llm_is_groundable = None
+                llm_confidence = None
+                prompt_tokens = None
+                completion_tokens = None
+                parse_ok = True
+                fallback_reason = None
+                try:
+                    raw, usage = await llm.call_grounding(prompt)
+                except Exception:
+                    parse_ok = False
+                    fallback_reason = "llm_error"
+                else:
+                    prompt_tokens = usage.prompt_tokens
+                    completion_tokens = usage.completion_tokens
+                    is_g = raw.get("is_groundable")
+                    conf = raw.get("confidence")
+                    if is_g is None or conf is None:
+                        parse_ok = False
+                        fallback_reason = "parse_error"
+                    else:
+                        llm_is_groundable = bool(is_g)
+                        llm_confidence = float(conf)
+                latency_ms = (time.perf_counter() - start) * 1000
+
+                records.append(
+                    {
+                        "id": case["id"],
+                        "category": case["category"],
+                        "expected_groundable": case["expected_groundable"],
+                        "top_similarity": top_similarity,
+                        "llm_is_groundable": llm_is_groundable,
+                        "llm_confidence": llm_confidence,
+                        "parse_ok": parse_ok,
+                        "fallback_reason": fallback_reason,
+                        "latency_ms": latency_ms,
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                    }
+                )
+            return records
+        finally:
+            db.close()
+            get_settings.cache_clear()
+            get_vector_store.cache_clear()
+
+
+def _live_enabled() -> bool:
+    """RUN_LIVE_LLM=1 AND settings.gms_api_key 비어있지 않음을 확인합니다(tests/live/conftest.py와 동일 게이트).
+
+    .env가 자동 로드되므로 GMS_API_KEY가 이미 있어도 RUN_LIVE_LLM=1을 명시해야 과금이 발생합니다.
+    """
+    import os
+
+    if os.environ.get("RUN_LIVE_LLM") != "1":
+        return False
+
+    from app.config import get_settings
+
+    return bool(get_settings().gms_api_key)
+
+
+# ---------------------------------------------------------------------------
+# CLI
 # ---------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "그라운딩 임계치 오프라인 평가(A4). --from-cache로 저장된 캐시를 "
-            "임계치 스윕합니다(API 호출 없음)."
+            "그라운딩 임계치 오프라인 평가(A4). --live로 실 API 호출 결과를 캐시에 "
+            "저장하거나, --from-cache로 저장된 캐시를 임계치 스윕합니다(API 호출 없음)."
         )
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="실 GMS API를 호출해 데이터셋 전 케이스를 수집하고 결과를 data/eval/에 캐시로 저장합니다. "
+        "RUN_LIVE_LLM=1 환경변수와 비어있지 않은 GMS_API_KEY가 필요합니다(비용 발생).",
     )
     parser.add_argument(
         "--from-cache",
@@ -313,15 +447,51 @@ def main(argv: list[str] | None = None) -> int:
         default=_DEFAULT_DATASET,
         help=f"평가 케이스 jsonl 경로 (기본: {_DEFAULT_DATASET.relative_to(_REPO_ROOT)})",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="--live 수집 시 처리할 케이스 수를 제한합니다(스모크 실행용, 비용 절감).",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="--live 결과 캐시 저장 경로 (기본: data/eval/grounding-{YYYYMMDD-HHMMSS}.jsonl)",
+    )
     args = parser.parse_args(argv)
+
+    if args.live and args.from_cache:
+        parser.error("--live와 --from-cache는 동시에 지정할 수 없습니다.")
 
     if args.from_cache:
         records = load_cache(args.from_cache)
         print(render_sweep_markdown(records))
         return 0
 
-    parser.error("--from-cache를 지정하세요(라이브 수집 --live는 다음 커밋에서 추가됩니다).")
-    return 2  # pragma: no cover
+    if args.live:
+        if not _live_enabled():
+            print(
+                "RUN_LIVE_LLM=1 과 비어있지 않은 GMS_API_KEY가 필요합니다 "
+                "(docs/grounding-eval.md 참고). 비용이 발생하는 실 API 호출입니다.",
+                file=sys.stderr,
+            )
+            return 1
+
+        records = asyncio.run(_collect_records(args.dataset, args.limit))
+
+        out_path = args.out
+        if out_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            out_path = _DEFAULT_CACHE_DIR / f"grounding-{timestamp}.jsonl"
+        save_cache(out_path, records)
+        print(f"수집 완료: {len(records)}건 -> {out_path}")
+        print()
+        print(render_sweep_markdown(records))
+        return 0
+
+    parser.error("--live 또는 --from-cache 중 하나를 지정하세요.")
+    return 2  # pragma: no cover — argparse.error()가 SystemExit을 던지므로 도달하지 않음
 
 
 if __name__ == "__main__":

@@ -59,8 +59,7 @@ async def assess(
             suggested_owner_id=_find_suggested_owner(retrieved_chunks),
         )
 
-    context = _format_context(retrieved_chunks)
-    prompt = f"질문: {user_query}\n\n검색된 컨텍스트:\n{context}"
+    prompt = build_grounding_prompt(retrieved_chunks, user_query)
 
     try:
         raw, usage = await llm.call_grounding(prompt)
@@ -96,6 +95,16 @@ async def assess(
         suggested_owner_id=suggested_owner_id,
         llm_usage=usage,
     )
+
+
+def build_grounding_prompt(chunks: list[RetrievedChunk], user_query: str) -> str:
+    """LLM 2차 판정(call_grounding)에 전달할 prompt를 구성합니다.
+
+    assess()가 사용하는 것과 동일한 형식이며, scripts/eval/grounding_eval.py(A4)가
+    임계치와 무관하게 LLM 판정을 항상 수집할 때 재사용합니다(프롬프트 텍스트 중복 방지).
+    """
+    context = _format_context(chunks)
+    return f"질문: {user_query}\n\n검색된 컨텍스트:\n{context}"
 
 
 def _format_context(chunks: list[RetrievedChunk]) -> str:
