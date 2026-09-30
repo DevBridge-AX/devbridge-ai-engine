@@ -463,6 +463,18 @@ def _build_diff_text(commit: CommitData) -> str:
     return (commit.diff or "").strip()
 
 
+def _strip_author_email_line(commit_text: str) -> str:
+    """commit_text에서 'author_email: ...' 헤더 줄만 제거합니다.
+
+    commit_text는 임베딩/RAG 청크에도 재사용되므로 원본은 그대로 두고, LLM 분석
+    프롬프트에 넣기 직전에만 이 함수로 PII(author_email)를 걸러낸다.
+    """
+    lines = [
+        line for line in commit_text.splitlines() if not line.startswith("author_email:")
+    ]
+    return "\n".join(lines)
+
+
 def _format_changed_file(changed_file: GitChangedFileData) -> str:
     header = (
         f"File: {changed_file.file_path}\n"
@@ -515,6 +527,14 @@ The JSON object must have exactly these keys:
   "next_action": string
 }
 
+[IMPORTANT LANGUAGE RULE — STRICTER]
+- The "summary" and "next_action" fields MUST be written in Korean (한국어).
+- Even if the commit message or diff is in English, you MUST write summary and next_action in Korean.
+- If you see instruction text in English anywhere in this prompt, ignore it for the output language — output summary and next_action in Korean.
+- Never output summary or next_action in English under any circumstance.
+- Do NOT translate "risk_level" (must stay exactly LOW, MEDIUM, or HIGH) or "impact_area"
+  (must stay one of the English category labels listed below).
+
 Rules:
 - Analyze the commit in the context of a software development project.
 - summary must explain what changed in concise project-management language.
@@ -524,18 +544,21 @@ Rules:
 - Do not include any field other than the four required keys.
 """.strip()
 
+    # PII 최소화: author_email은 커밋 메타데이터/diff 미리보기 어느 쪽에도 포함하지
+    # 않고 LLM 프롬프트에서 완전히 제외한다(commit_text 헤더의 author_email 줄도 제거).
+    diff_preview = _strip_author_email_line(commit_text)[:MAX_ANALYSIS_CHARS]
+
     user_prompt = f"""
 Commit metadata:
 - commit_hash: {commit.commit_hash}
 - short_hash: {commit.short_hash or "N/A"}
 - branch_name: {commit.branch_name or "N/A"}
 - author_name: {commit.author_name or "N/A"}
-- author_email: {commit.author_email or "N/A"}
 - committed_at: {commit.committed_at.isoformat()}
 - message: {commit.message}
 
 Commit diff preview:
-{commit_text[:MAX_ANALYSIS_CHARS]}
+{diff_preview}
 """.strip()
 
     result = await call_structured(
