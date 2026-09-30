@@ -96,3 +96,7 @@ def test_endpoint_auth_ok_and_validation(training_dir):
     assert empty.status_code == 422
     bad_ws = client.post(URL, json=_payload([_rec()], ws="../evil"), headers={"X-Internal-Api-Key": key})
     assert bad_ws.status_code == 422
+    # 선두 점("." / "..")은 정규식만으로 막혀야 한다 (500이 아니라 422)
+    for bad in ("..", ".", ".hidden"):
+        assert client.post(URL, json=_payload([_rec()], ws=bad), headers={"X-Internal-Api-Key": key}).status_code == 422
+        assert client.post(URL, json={**_payload([_rec()]), "dataset_version": bad}, headers={"X-Internal-Api-Key": key}).status_code == 422

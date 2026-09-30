@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from app.schemas.chat import PersonaRole
 
 # workspace_id / dataset_version은 파일 경로 구성요소로 쓰이므로 경로 탈출 문자를 막는다.
-SAFE_NAME_PATTERN = r"^[A-Za-z0-9._-]{1,64}$"
+SAFE_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"  # 선두 점 금지: "." / ".." 차단
 
 
 class TrainingRecordIn(BaseModel):
