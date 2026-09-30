@@ -110,37 +110,51 @@ final = (top_similarity >= threshold) AND effective_llm_is_groundable
 
 ## 1회차 결과
 
-> 아래 표는 `RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live` 실행 후
-> `--from-cache`로 스윕한 결과를 채워 넣습니다(주 에이전트가 실행 예정).
-
-- 실행일: TBD
-- 그라운딩 모델(`GROUNDING_MODEL`): TBD
+- 실행일: 2026-09-30
+- 그라운딩 모델(`GROUNDING_MODEL`): `gemini-2.5-flash-lite`
 - 데이터셋 버전: `scripts/eval/datasets/grounding_cases.jsonl` (2026-09-30, 40건, 라벨 사용자 검수 전)
-- 결과 캐시 파일: TBD (`data/eval/grounding-{ts}.jsonl`)
+- 코퍼스: `tests/live/fixtures/corpus` 4개 문서 (소형 코퍼스라 운영 분포와 다를 수 있음)
 
 ### 임계치 스윕
 
 | threshold | accuracy | not-gr precision | not-gr recall | not-gr F1 | filter false-block | LLM 호출 절감률 | LLM 단독 일치율 | 파싱 실패율 |
 |---|---|---|---|---|---|---|---|---|
-| 0.20 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| 0.25 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| 0.30 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| 0.35 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| 0.40 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| 0.45 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| 0.50 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| 0.55 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| 0.60 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| 0.20 | 85.0% | 100.0% | 50.0% | 66.7% | 0.0% | 0.0% | 85.0% | 5.0% |
+| 0.25 | 85.0% | 100.0% | 50.0% | 66.7% | 0.0% | 0.0% | 85.0% | 5.0% |
+| 0.30 | 85.0% | 100.0% | 50.0% | 66.7% | 0.0% | 0.0% | 85.0% | 5.0% |
+| **0.35 (현행)** | 85.0% | 100.0% | 50.0% | 66.7% | 0.0% | 0.0% | 85.0% | 5.0% |
+| 0.40 | 85.0% | 100.0% | 50.0% | 66.7% | 0.0% | 0.0% | 85.0% | 5.0% |
+| 0.45 | 82.5% | 85.7% | 50.0% | 63.2% | 3.6% | 2.5% | 85.0% | 5.0% |
+| 0.50 | 62.5% | 40.0% | 50.0% | 44.4% | 32.1% | 22.5% | 85.0% | 5.0% |
+| 0.55 | 60.0% | 37.5% | 50.0% | 42.9% | 35.7% | 25.0% | 85.0% | 5.0% |
+| 0.60 | 52.5% | 31.6% | 50.0% | 38.7% | 46.4% | 32.5% | 85.0% | 5.0% |
 
-### 카테고리별 filter false-block rate
+### 카테고리별 top 유사도 분포 / filter false-block rate
 
-TBD (스크립트 출력의 두 번째 표를 그대로 붙여 넣기)
+| category | 유사도 min | median | max | false-block @0.45 | @0.50 |
+|---|---|---|---|---|---|
+| chitchat | 0.449 | 0.481 | 0.539 | 12.5% | 87.5% |
+| general_tech | 0.498 | 0.632 | 0.693 | 0.0% | 12.5% |
+| ambiguous | 0.473 | 0.698 | 0.757 | 0.0% | 25.0% |
+| project_answerable | 0.623 | 0.718 | 0.770 | 0.0% | 0.0% |
+| project_unanswerable | 0.624 | 0.698 | 0.775 | - | - |
 
 ### confidence 구간별 정답률 / 평균 토큰·지연
 
-TBD
+- confidence 0.8~1.0: 32건 중 27건 정답(84.4%), 0~0.5: 6건 중 6건 정답, 0.5~0.8: 0건
+- LLM 오류(fail-open) 2건(a001, a008) → 파싱 실패율 5.0%
+- 판정 1건당 입력 평균 약 1,991 토큰, 지연 p50 1.03s / p95 1.14s
+- 모든 호출에서 thinking 토큰 1~2가 발생했으나 `finishReason=STOP`으로 잘림은 없음
+
+### 해석
+
+1. **1차 유사도 필터가 사실상 동작하지 않음**: 잡담조차 top 유사도가 0.449 이상이라 현행 0.35에서는 LLM 호출 절감이 0%다. 모든 질문이 LLM 판정까지 간다.
+2. **임계치를 올려도 얻는 것이 없음**: 0.45에서 절감 2.5%에 정확도 -2.5%p, 0.50부터는 잡담·일반 기술 질문을 대량 오차단한다. 도메인 질문(answerable/unanswerable)은 유사도 분포가 겹쳐 유사도만으로는 분리할 수 없다.
+3. **LLM 판정의 약점은 "주제는 코퍼스와 같지만 답은 없는" 질문**: not-groundable recall 50%. 오판 5건 모두 confidence 0.8~0.9로 높게 응답해 confidence로는 걸러낼 수 없다(보정 안 됨).
 
 ### 권고
 
-TBD — 위 결과를 근거로 임계치 변경 여부, chitchat/general_tech 1차 필터 우회(별도
-WP) 필요 여부를 결정합니다. 이 PR에서는 기본값을 변경하지 않습니다.
+- 임계치 기본값 0.35는 **유지**(변경 이득 없음). 유사도 필터는 비용 절감 장치가 아니라 "검색 결과 없음" 방어선으로 보는 것이 맞다.
+- 개선 여지는 LLM 판정 쪽: 판정 프롬프트에 "질문의 구체적 사실(수치·주체·절차)이 컨텍스트에 명시되어 있을 때만 true" 규칙과 반례 few-shot을 추가하는 후속 WP를 제안한다.
+- 판정 입력(약 2k 토큰)이 호출 비용의 대부분이므로, 컨텍스트를 top-3 또는 청크 요약으로 줄이는 실험도 같은 WP에서 비교한다.
+- 매 호출 thinking 1~2 토큰으로 `call_grounding` 경고가 과다하게 출력된다. 경고 조건을 `MAX_TOKENS`일 때로 좁히는 것을 후속으로 검토한다.
