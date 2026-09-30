@@ -318,6 +318,20 @@ turn 1/2+ : rewritten_query ─► embed ─► cache.lookup ─┬─ hit  ─�
   `scripts/metrics_report.py`가 hit율과 hit/miss별 `total_ms`·`ttft_ms` p50/p95를 보여줍니다.
 - **멀티 워커 제한**: 프로세스 메모리 캐시이므로 워커마다 독립이며 인덱싱 무효화가 다른
   워커에는 전파되지 않습니다. 멀티 워커 운영 시 TTL이 stale 허용 상한이 됩니다.
+- **stale 저장 방지(generation)**: `SemanticCache`는 워크스페이스별 generation 카운터를
+  가지며 `invalidate_workspace`마다 1 증가합니다. 파이프라인은 조회 직전에 값을 잡아 두고,
+  메인 스트림이 끝난 뒤 저장 직전에 값이 달라졌으면(스트림 도중 인덱싱 무효화) 저장하지
+  않습니다. 이전 컨텍스트로 만든 답변이 무효화 이후 TTL 동안 재생되는 것을 막습니다.
+- **한계**:
+  - 조회는 순수 Python 선형 스캔입니다. 네임스페이스당 약 500건·3072차원이면 조회 1회에
+    약 50ms 동기 블로킹이 생길 수 있습니다(엔트리가 적을 때만 1ms 미만).
+  - turn 2+는 `rewritten_query`만으로 첫 턴 답변을 재생하므로, 대화 히스토리에 의존하는
+    답변이 필요한 경우에는 적합하지 않습니다. 또한 네임스페이스에 `user_id`가 없어 같은
+    role·접근 권한을 가진 사용자 사이에서 답변이 재생됩니다. 개인정보가 답변에 반영되는
+    질문이 있다면 주의해야 합니다.
+  - 플래그가 켜지면 `embed_ms`가 `retrieve_ms` 밖에서 측정되고, BM25 검색과 임베딩의
+    병렬 실행이 사라집니다(임베딩을 먼저 기다림). 따라서 off 상태와 `retrieve_ms`를
+    직접 비교할 수 없습니다.
 - **설정**: `SEMANTIC_CACHE_ENABLED`(기본 false), `SEMANTIC_CACHE_THRESHOLD`(0.95),
   `SEMANTIC_CACHE_TTL_SECONDS`(3600), `SEMANTIC_CACHE_MAX_ENTRIES`(500, 워크스페이스당).
 
