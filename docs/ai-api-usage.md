@@ -139,13 +139,13 @@ JSON 파싱 오류를 던지면 `analyze_document()`가 이를 잡아 fallback �
 이어지던 기존 동작을 git 커밋 분석과 동일한 패턴으로 통일). 이때 응답의 `mode`는
 `"llm_fallback"`으로 표시되어 정상 `"fallback"` 모드와 구분됩니다. `mode` 필드는
 자유 문자열(`str`)이며, Spring `DocumentAnalysisResponse.mode`도 값으로 분기하지 않고
-저장만 하는 것을 확인했습니다(2026-10-01 조사, `devbridge-backend` 읽기 전용 참조).
+저장만 하는 것을 확인했습니다(2026-10-01 조사, Spring 레포 읽기 전용 참조).
 
 **건당 토큰 비용** (라이브 검증 1회차 기준, `llm_calls.jsonl` purpose=`document_analysis`
 집계 — `RUN_LIVE_LLM=1 python3 -m pytest -m live -q tests/live/test_analysis_live.py -s`
 실행 후 기입):
-- prompt_tokens 평균: `TODO(라이브 실행 후 기입)`
-- completion_tokens 평균: `TODO(라이브 실행 후 기입)`
+- prompt_tokens 평균: 737 (2026-10-01 라이브 1회차, claude-sonnet-4-6, 표본 3건(md/py/pdf 메타))
+- completion_tokens 평균: 422 / 지연 p50 6.7s · p95 8.0s
 
 ---
 
@@ -172,8 +172,8 @@ push 시 비용/지연이 선형으로 증가하므로, 필요 시 후속 과제
 있습니다(이번 범위에서는 구현하지 않음, 아이디어만 기록).
 
 **건당 토큰 비용** (라이브 검증 1회차 기준, purpose=`commit_analysis` 집계):
-- prompt_tokens 평균: `TODO(라이브 실행 후 기입)`
-- completion_tokens 평균: `TODO(라이브 실행 후 기입)`
+- prompt_tokens 평균: 673 (2026-10-01 라이브 1회차, claude-sonnet-4-6, 표본 3건(소형 diff))
+- completion_tokens 평균: 231 / 지연 p50 5.0s · p95 5.8s
 
 ---
 
@@ -195,8 +195,8 @@ LLM 호출 자체는 성공했지만 `summary`가 빈 문자열인 경우는 기
 성공+빈 값=`llm`).
 
 **건당 토큰 비용** (라이브 검증 1회차 기준, purpose=`workspace_summary` 집계):
-- prompt_tokens 평균: `TODO(라이브 실행 후 기입)`
-- completion_tokens 평균: `TODO(라이브 실행 후 기입)`
+- prompt_tokens 평균: 259 (2026-10-01 라이브 1회차, claude-sonnet-4-6, 표본 1건)
+- completion_tokens 평균: 331 / 지연 p50 6.2s · p95 6.2s
 
 ---
 
