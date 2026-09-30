@@ -117,7 +117,7 @@ sequenceDiagram
 | 용도 | 환경변수 | 현재 기본값 | 선정 근거 |
 | :--- | :--- | :--- | :--- |
 | 메인 답변 생성 | `MAIN_MODEL` | `claude-sonnet-4-6` | 긴 컨텍스트 종합, 페르소나 문체 변환, 멀티턴 추론 품질이 필요해 가장 무거운 모델 배정 |
-| 멀티턴 쿼리 재구성 (turn 2+) | `REWRITE_MODEL` | `claude-sonnet-4-6` (권장: `gemini-3.5-flash`) | 검색어 다듬기 수준의 낮은 난이도 태스크 — 경량 모델 전환 시 비용 5~10배 절감 가능 |
+| 멀티턴 쿼리 재구성 (turn 2+) | `REWRITE_MODEL` | `claude-haiku-4-5-20251001` | 검색어 다듬기 수준의 낮은 난이도 태스크 — 경량 모델 전환 시 비용 5~10배 절감 가능 |
 | 그라운딩 이진 판정 | `GROUNDING_MODEL` | `gemini-3.5-flash-lite` | `{is_groundable, confidence}` 2필드 구조화 출력(max_tokens=64)만 필요해 가장 저비용 티어로 배정 |
 | 임베딩 생성 | `EMBEDDING_MODEL` | `gemini-embedding-2` | GMS 내 배치(최대 100건/요청) 지원, 별도 계약 없이 비용 효율적 |
 

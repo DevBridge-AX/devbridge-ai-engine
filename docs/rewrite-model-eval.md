@@ -146,6 +146,7 @@ python3 -m scripts.eval.rewrite_eval \
 - 채택 모델의 답변형 출력률이 0%이므로 프롬프트 보강은 지금 필수는 아니다. 다만 모델 교체에 대비한 방어 코드(답변형 출력이면 원문 fallback)는 저비용으로 넣을 가치가 있어 후속으로 제안한다.
 - 코드 기본값(`app/config.py`의 `rewrite_model`), `.env.example`, 관련 문서의 모델명 변경은 승인 후 별도 커밋으로 진행한다.
 - 2026-10-01: 답변형/빈 출력 시 원문 fallback 가드를 `app/core/llm/rewrite_guard.py`로 추가했다.
+- 2026-10-01: 승인에 따라 코드 기본값을 `claude-haiku-4-5-20251001`로 변경했다.
 
 ## 범위에서 제외한 것
 
