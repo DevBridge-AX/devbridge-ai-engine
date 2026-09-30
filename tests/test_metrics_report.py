@@ -179,6 +179,30 @@ class TestRenderMarkdownAndCli:
         markdown = metrics_report.render_markdown(records_by_event)
         assert "평균 prompt_tokens" not in markdown
 
+    def test_chat_metrics_cache_section_with_hits(self):
+        records = [
+            {"cache_enabled": True, "cache_hit": True, "total_ms": 10.0, "ttft_ms": 5.0},
+            {"cache_enabled": True, "cache_hit": False, "total_ms": 2000.0, "ttft_ms": 800.0},
+            {"cache_enabled": True, "cache_hit": False, "total_ms": 3000.0, "ttft_ms": 1000.0},
+            {"cache_enabled": False, "cache_hit": False, "total_ms": 1.0, "ttft_ms": None},
+        ]
+        markdown = metrics_report.render_markdown({"chat_metrics": records})
+
+        assert "시맨틱 캐시 hit율: 33.3% (1/3)" in markdown
+        assert "| cache_hit=True | total_ms | 10.0 | 10.0 |" in markdown
+        assert "| cache_hit=False | ttft_ms | 900.0 | 990.0 |" in markdown
+
+    def test_chat_metrics_cache_section_na_when_disabled(self):
+        records = [{"cache_enabled": False, "cache_hit": False, "total_ms": 5.0}, {"total_ms": 6.0}]
+        markdown = metrics_report.render_markdown({"chat_metrics": records})
+
+        assert "시맨틱 캐시 hit율: n/a" in markdown
+        assert "cache_hit=" not in markdown
+
+    def test_non_chat_events_have_no_cache_section(self):
+        markdown = metrics_report.render_markdown({"ingestion": [{"result": "COMPLETED", "total_ms": 1.0}]})
+        assert "시맨틱 캐시" not in markdown
+
     def test_main_returns_zero_for_valid_dir(self, tmp_path, capsys):
         _write_jsonl(tmp_path / "ingestion.jsonl", [{"result": "COMPLETED", "total_ms": 1.0}])
 
