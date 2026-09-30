@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     # LLM provider
     main_model: str = "claude-sonnet-4-6"
     rewrite_model: str = "claude-sonnet-4-6"
-    grounding_model: str = "gemini-3.5-flash-lite"
+    grounding_model: str = "gemini-2.5-flash-lite"
 
     # Day 2 document analysis mode
     # fallback: 실제 모델 API 호출 없이 규칙 기반 분석

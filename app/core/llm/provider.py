@@ -6,8 +6,8 @@ LLM API 클라이언트 — GMS 멀티 프로바이더 게이트웨이.
 모델 교체는 .env 값만 변경하면 됩니다 (코드 변경 불필요).
 
 call_main()        — 메인 답변 생성 (non-streaming)              MAIN_MODEL    (claude-*)
-call_main_stream() — 메인 답변 생성 (Anthropic SSE 스트리밍)     MAIN_MODEL    (claude-*)
-call_rewrite()     — 멀티턴 쿼리 재구성                           REWRITE_MODEL (gpt-*)
+call_main_stream() — 메인 답변 생성 (Anthropic SSE 스트리밍)     MAIN_MODEL    (claude-* 전용, SSE 포맷이 Anthropic 고정)
+call_rewrite()     — 멀티턴 쿼리 재구성                           REWRITE_MODEL (provider-prefix 무관, claude-*/gpt-*/gemini-* 모두 가능)
 call_grounding()   — 그라운딩 이진 판정, JSON dict 반환           GROUNDING_MODEL (gemini-*)
 call_structured()  — JSON 구조화 응답 범용                        MAIN_MODEL    (claude-*)
 
@@ -259,7 +259,10 @@ async def call_rewrite(
     system_prompt: str = "",
     max_tokens: int = 512,
 ) -> tuple[str, LLMUsage]:
-    """REWRITE_MODEL(gpt-*)로 멀티턴 쿼리를 재구성합니다. query_rewriter.py에서 호출됩니다."""
+    """REWRITE_MODEL로 멀티턴 쿼리를 재구성합니다. query_rewriter.py에서 호출됩니다.
+
+    provider-prefix에 무관하게 동작합니다 (claude-*/gpt-*/gemini-* 모두 가능).
+    """
     settings = get_settings()
     provider = _detect_provider(settings.rewrite_model)
     body = _build_body(provider, settings.rewrite_model, messages, system_prompt, max_tokens)
@@ -324,7 +327,10 @@ async def call_grounding(prompt: str) -> tuple[dict, LLMUsage]:
 
     Returns:
         ({"is_groundable": bool, "confidence": float}, LLMUsage).
-        파싱 실패 시 ({"is_groundable": False, "confidence": 0.0}, usage) 반환.
+        JSON 파싱 실패(비-JSON 응답, candidates 누락 등) 시 ({}, usage)를 반환합니다.
+        thinking 모델(gemini-2.5-flash, gemini-3.5-flash 등)은 max_tokens=64에서
+        추론 토큰만 소비하고 truncate되어 빈 응답이 반환되는 경우가 있으며, 이때도
+        동일하게 ({}, usage)가 반환되고 아래 경고 로그가 남습니다.
     """
     settings = get_settings()
     provider = _detect_provider(settings.grounding_model)
@@ -354,6 +360,17 @@ async def call_grounding(prompt: str) -> tuple[dict, LLMUsage]:
         )
         resp.raise_for_status()
         data = resp.json()
+
+    candidates = data.get("candidates") or []
+    finish_reason = candidates[0].get("finishReason") if candidates else None
+    thoughts_tokens = data.get("usageMetadata", {}).get("thoughtsTokenCount", 0)
+    if finish_reason == "MAX_TOKENS" or thoughts_tokens > 0:
+        logger.warning(
+            "call_grounding: thinking/truncation 감지 model=%s finish=%s thoughts=%d",
+            settings.grounding_model,
+            finish_reason,
+            thoughts_tokens,
+        )
 
     text, usage_raw = _parse_response(provider, data)
     text = text.strip()
