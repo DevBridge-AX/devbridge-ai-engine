@@ -128,7 +128,7 @@ class TestGroundablePath:
                 llm_usage=LLMUsage(model="gemini-grounding", prompt_tokens=10, completion_tokens=5),
             )
 
-        async def fake_stream(messages, system_prompt):
+        async def fake_stream(messages, system_prompt, max_tokens=4096):
             yield "안녕", None
             yield "하세요", None
             yield None, LLMUsage(model="claude-main", prompt_tokens=100, completion_tokens=20)
@@ -195,7 +195,7 @@ class TestGroundingFallbackPath:
                 fallback_reason="llm_error",
             )
 
-        async def fake_stream(messages, system_prompt):
+        async def fake_stream(messages, system_prompt, max_tokens=4096):
             yield "안녕", None
             yield None, LLMUsage(model="claude-main", prompt_tokens=100, completion_tokens=20)
 

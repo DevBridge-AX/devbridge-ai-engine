@@ -138,10 +138,13 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
     system_prompt = get_system_prompt(request.role, retrieved_context, truncated_history)
     messages = _build_messages(truncated_history, request.content)
 
+    settings = get_settings()
     main_usage: LLMUsage | None = None
     first_token_at: float | None = None
     with timer.measure("llm_ms"):
-        async for text, usage in llm.call_main_stream(messages, system_prompt):
+        async for text, usage in llm.call_main_stream(
+            messages, system_prompt, max_tokens=settings.main_max_tokens
+        ):
             if text is not None:
                 if first_token_at is None:
                     first_token_at = time.perf_counter()
@@ -150,7 +153,6 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
                 main_usage = usage
 
     if main_usage is None:
-        settings = get_settings()
         main_usage = LLMUsage(model=settings.main_model, prompt_tokens=0, completion_tokens=0)
 
     ttft_ms = (first_token_at - total_start) * 1000 if first_token_at is not None else None

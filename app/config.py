@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     rewrite_model: str = "claude-sonnet-4-6"
     grounding_model: str = "gemini-2.5-flash-lite"
 
+    # 메인 답변 생성 스트리밍 호출의 max_tokens (chat_pipeline.run() → call_main_stream()).
+    # provider.call_main_stream()의 기본값(4096)과 동일하므로 기본 동작은 변하지 않습니다.
+    # 라이브 검증 하네스(tests/live)는 비용 상한을 위해 이 값을 낮춰 override합니다.
+    main_max_tokens: int = 4096
+
     # Day 2 document analysis mode
     # fallback: 실제 모델 API 호출 없이 규칙 기반 분석
     # llm: provider.py의 GMS LLM 호출 구조 사용
