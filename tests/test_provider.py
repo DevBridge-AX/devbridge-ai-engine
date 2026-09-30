@@ -179,6 +179,52 @@ class TestCallGroundingThinkingWarning:
             for record in caplog.records
         )
 
+    @staticmethod
+    def _ok_response(thoughts: int) -> dict:
+        return {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": '{"is_groundable": true, "confidence": 0.9}'}]
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 100,
+                "candidatesTokenCount": 10,
+                "thoughtsTokenCount": thoughts,
+            },
+        }
+
+    async def test_call_grounding_no_warning_on_small_thoughts(self, mock_gemini, caplog):
+        """STOP + 소량 thoughts(2)는 경고 없이 정상 파싱되고 지표는 thoughts를 포함합니다."""
+        mock_gemini(lambda req: httpx.Response(200, json=self._ok_response(2)))
+
+        with caplog.at_level("WARNING", logger="app.core.llm.provider"):
+            result, usage = await call_grounding("p")
+
+        assert result == {"is_groundable": True, "confidence": 0.9}
+        assert usage.completion_tokens == 12
+        assert not any(
+            "thinking/truncation" in record.message for record in caplog.records
+        )
+
+    async def test_call_grounding_warns_on_thoughts_over_half_budget(
+        self, mock_gemini, caplog
+    ):
+        """STOP이어도 thoughts가 max_tokens의 50% 이상이면 경고합니다."""
+        mock_gemini(lambda req: httpx.Response(200, json=self._ok_response(40)))
+
+        with caplog.at_level("WARNING", logger="app.core.llm.provider"):
+            result, usage = await call_grounding("p")
+
+        assert result == {"is_groundable": True, "confidence": 0.9}
+        assert any(
+            "thinking/truncation" in record.message and "thoughts=40" in record.message
+            for record in caplog.records
+        )
+
 
 class TestCallGroundingHttpError:
 
