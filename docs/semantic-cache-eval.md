@@ -146,22 +146,32 @@ paraphrase 적중 여부는 단언하지 않고 기록만 합니다(miss 시 `ca
 - 따라서 임베딩 유사도 단독 캐시는 "사실상 동일 문장 재질문" 수준의 적중만 안전하게 보장합니다.
   기본값 `semantic_cache_threshold=0.95`를 유지하는 것을 권고하며, 이 평가로 기본값을 변경하지 않습니다.
 
-### 라이브 측정 1회차
+### 라이브 측정 1회차 (2026-10-01)
 
-미실행. 실행 후 채웁니다(실험 환경: 코퍼스 4문서, 질문 8개 + paraphrase 1건 기준).
+실험 환경: 코퍼스 4문서(tests/live/fixtures/corpus)를 tmp 워크스페이스에 시드, `MAIN_MAX_TOKENS=256`,
+main `claude-sonnet-4-6`, grounding `gemini-2.5-flash-lite`, 임베딩 `gemini-embedding-2`, 임계치 0.95,
+role=developer, 단일 턴. 질문 8개(p001·p006·p008·p010·p011·p016·p017·p019의 q1)를 1회씩(Phase 1,
+전부 miss) → 동일 질문 8개 재요청(Phase 2, 전부 hit) → p001 q2 1회(Phase 3). 결과 파일
+`data/live_runs/20261001-110709.json`.
 
 | 항목 | 값 |
 | --- | --- |
-| 실행 일시 | 미실행 |
-| 비교 대상 질문 수 | 미실행 |
-| miss total_ms p50 / p95 | 미실행 |
-| hit total_ms p50 / p95 | 미실행 |
-| miss ttft_ms p50 / p95 | 미실행 |
-| hit ttft_ms p50 / p95 | 미실행 |
-| 요청당 LLM 토큰 (miss / hit) | 미실행 |
-| 토큰 절감률 | 미실행 |
-| hit 지연 절감 배수 (total p50) | 미실행 |
-| p001 paraphrase 적중 | 미실행 |
+| 비교 대상 질문 수 | 8 / 8 (그라운딩 실패 제외 0건) |
+| miss total_ms p50 / p95 | 6,782 / 7,127 |
+| hit total_ms p50 / p95 | 604 / 653 |
+| miss ttft_ms p50 / p95 | 2,742 / 3,267 |
+| hit ttft_ms p50 / p95 | 604 / 653 |
+| 요청당 LLM 토큰 (miss / hit) | 4,881 / 0 (main+grounding, prompt+completion 평균) |
+| 토큰 절감률 (hit) | 100% |
+| hit 지연 절감 배수 (total p50) | 11.2배 |
+| p001 paraphrase 적중 | hit (유사도 0.9556) |
+| 이번 실행 LLM 토큰 합계 | grounding 15,888 / 140, main 21,056 / 1,966 (prompt / completion) |
+
+- hit 경로의 지연(약 0.6s)은 질문 임베딩 1회(p50 약 0.6s)가 대부분이며, 캐시 조회 자체는 1ms 미만이다.
+- hit 응답은 Phase 1 답변·citations와 동일했고 `token_usage.main`은 0/0, `grounding`은 null로 보고됐다(계약 불변).
+- 이 수치는 "hit가 발생했을 때"의 효과다. 실제 절감 총량은 적중률에 비례하며, 바꿔 말한 질문의 적중률은 위
+  오프라인 스윕대로 임계치 0.95에서 5%(1/20)에 그친다. 동일 질문 반복(FAQ·재접속 재질문)에서만 효과를
+  기대할 수 있다.
 
 ## 후속 선택지
 
