@@ -45,7 +45,8 @@ class StageTimer:
             return 0.0
 
         elapsed_ms = (time.perf_counter() - started) * 1000
-        self.stages[name] = elapsed_ms
+        # 같은 구간이 재실행되면(예: ACL 재조회) 덮어쓰지 않고 누적한다.
+        self.stages[name] = self.stages.get(name, 0.0) + elapsed_ms
         return elapsed_ms
 
     def set_field(self, name: str, value: object) -> None:

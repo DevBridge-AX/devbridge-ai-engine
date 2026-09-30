@@ -6,6 +6,8 @@ StageTimer의 구간 측정과 record_metric의 JSONL 기록/비활성화/쓰기
 """
 
 import json
+
+import pytest
 import time
 from types import SimpleNamespace
 
@@ -112,3 +114,15 @@ class TestRecordMetric:
         assert record["session_id_hash"] == "abc123def456"
         assert "question" not in record
         assert "user_id" not in record
+
+
+def test_stage_timer_accumulates_repeated_stage(monkeypatch):
+    """같은 구간을 두 번 측정하면 합산되어야 한다(ACL 재조회 시 vector_ms 등)."""
+    ticks = iter([0.0, 0.010, 1.0, 1.005])  # 10ms, 5ms
+    monkeypatch.setattr(metrics.time, "perf_counter", lambda: next(ticks))
+    timer = metrics.StageTimer()
+    with timer.measure("vector_ms"):
+        pass
+    with timer.measure("vector_ms"):
+        pass
+    assert timer.stages["vector_ms"] == pytest.approx(15.0)
