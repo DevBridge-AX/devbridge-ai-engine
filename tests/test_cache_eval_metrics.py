@@ -185,3 +185,122 @@ class TestDatasetFile:
         for p in pairs:
             assert p["q1"].strip() and p["q2"].strip()
             assert p["q1"] != p["q2"]
+
+
+# ---------------------------------------------------------------------------
+# LLM 재검증(verify) 지표
+# ---------------------------------------------------------------------------
+
+from scripts.eval.cache_eval_metrics import (  # noqa: E402
+    has_verify_fields,
+    render_verify_markdown,
+    verify_stats,
+    verify_sweep,
+)
+
+
+def _verify_records() -> list[dict]:
+    # (id, kind, similarity, verify_same, latency, prompt_tokens)
+    rows = [
+        ("s0", "same_intent", 0.97, True, 500.0, 40),   # 즉시 hit
+        ("s1", "same_intent", 0.90, True, 600.0, 40),   # 후보, YES
+        ("s2", "same_intent", 0.87, False, 700.0, 40),  # 후보, 오판 NO
+        ("s3", "same_intent", 0.82, True, 800.0, 40),   # 낮은 후보
+        ("d0", "different_intent", 0.96, False, 400.0, 40),  # 즉시 hit = false hit (검증 무관)
+        ("d1", "different_intent", 0.91, False, 450.0, 40),  # 후보, NO
+        ("d2", "different_intent", 0.88, True, 550.0, 40),   # 후보, 오판 YES
+        ("d3", "different_intent", 0.70, False, 300.0, 40),
+    ]
+    return [
+        {
+            "id": i, "kind": k, "q1": "a", "q2": "b", "similarity": sim,
+            "verify_outcome": "yes" if v else "no", "verify_same": v,
+            "verify_latency_ms": lat, "verify_prompt_tokens": pt, "verify_completion_tokens": 1,
+            "verify_model": "haiku", "verify_prompt_version": "v1",
+        }
+        for i, k, sim, v, lat, pt in rows
+    ]
+
+
+def _vrow(rows, t):
+    return next(r for r in rows if r["candidate_threshold"] == t)
+
+
+def test_has_verify_fields_detects_old_cache():
+    assert has_verify_fields(_verify_records()) is True
+    assert has_verify_fields(_records()) is False
+
+
+def test_verify_sweep_counts_and_rates():
+    rows = verify_sweep(_verify_records(), [0.86, 0.80, 0.95], direct_threshold=0.95)
+
+    r86 = _vrow(rows, 0.86)
+    # same: s0 직접 hit, s1 YES hit, s2 NO miss, s3 구간 밖 -> 2/4
+    assert (r86["same_hits"], r86["same_total"]) == (2, 4)
+    # diff: d0 직접 hit(false hit), d1 NO, d2 YES(false hit), d3 miss -> 2/4
+    assert (r86["diff_hits"], r86["diff_total"]) == (2, 4)
+    assert r86["hit_rate"] == 0.5 and r86["false_hit_rate"] == 0.5
+    assert (r86["verify_calls"], r86["verify_calls_same"], r86["verify_calls_diff"]) == (4, 2, 2)
+    assert r86["adopt"] is False
+
+    r80 = _vrow(rows, 0.80)
+    assert r80["same_hits"] == 3  # s3도 후보 구간, YES
+    assert r80["verify_calls"] == 5
+
+    # candidate == direct 이면 후보 구간이 없어 검증 호출 0, 임계치만 쓴 것과 동일
+    r95 = _vrow(rows, 0.95)
+    assert r95["verify_calls"] == 0
+    assert (r95["same_hits"], r95["diff_hits"]) == (1, 1)
+
+
+def test_verify_sweep_adoption_criterion():
+    records = [
+        {"id": f"s{i}", "kind": "same_intent", "q1": "a", "q2": "b", "similarity": 0.9,
+         "verify_same": i < 3} for i in range(4)
+    ] + [
+        {"id": f"d{i}", "kind": "different_intent", "q1": "a", "q2": "b", "similarity": 0.9,
+         "verify_same": False} for i in range(4)
+    ]
+    rows = verify_sweep(records, [0.86, 0.95])
+    assert _vrow(rows, 0.86)["adopt"] is True  # hit 75%, false 0%
+    assert _vrow(rows, 0.95)["adopt"] is False  # hit 0%
+
+
+def test_verify_sweep_missing_verify_field_is_miss():
+    rows = verify_sweep(_records(), [0.86])  # 구버전 레코드(verify 없음)
+    # 0.86 이상 후보는 검증 정보가 없으므로 miss, 직접 hit(>=0.95)만 인정
+    assert _vrow(rows, 0.86)["same_hits"] == 2
+    assert _vrow(rows, 0.86)["diff_hits"] == 1
+
+
+def test_verify_stats():
+    stats = verify_stats(_verify_records())
+    assert stats["total"] == 8
+    assert stats["false_yes_ids"] == ["d2"]
+    assert stats["false_no_ids"] == ["s2"]
+    assert stats["misjudged_ids"] == ["d2", "s2"]
+    assert stats["accuracy"] == pytest.approx(6 / 8)
+    assert stats["latency_p50_ms"] == pytest.approx(525.0)
+    assert stats["avg_prompt_tokens"] == 40
+    assert stats["outcomes"] == {"yes": 4, "no": 4}
+    assert stats["models"] == ["haiku"] and stats["prompt_versions"] == ["v1"]
+
+
+def test_verify_stats_without_verify_fields():
+    assert verify_stats(_records()) == {"total": 0}
+
+
+def test_render_verify_markdown():
+    records = _verify_records()
+    md = render_verify_markdown(records, verify_sweep(records), verify_stats(records))
+    assert "## LLM 재검증 스윕" in md
+    assert "| 0.86 |" in md
+    assert "d2" in md and "s2" in md
+    assert "채택" in md
+
+
+def test_old_cache_report_has_no_verify_section():
+    from scripts.eval.cache_eval import _report
+
+    assert "LLM 재검증" not in _report(_records())
+    assert "LLM 재검증 스윕" in _report(_verify_records())
