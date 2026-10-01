@@ -470,6 +470,10 @@ _GROUNDING_SYSTEM_PROMPT = """\
      판정: {"is_groundable": false, "confidence": 0.0}
 """
 
+_GROUNDING_MAX_TOKENS = 64
+_GROUNDING_THOUGHTS_WARN_RATIO = 0.5
+
+
 async def call_grounding(prompt: str) -> tuple[dict, LLMUsage]:
     """GROUNDING_MODEL(gemini-*)로 그라운딩 이진 판정을 수행하고 파싱된 dict를 반환합니다.
 
@@ -481,7 +485,9 @@ async def call_grounding(prompt: str) -> tuple[dict, LLMUsage]:
         JSON 파싱 실패(비-JSON 응답, candidates 누락 등) 시 ({}, usage)를 반환합니다.
         thinking 모델(gemini-2.5-flash, gemini-3.5-flash 등)은 max_tokens=64에서
         추론 토큰만 소비하고 truncate되어 빈 응답이 반환되는 경우가 있으며, 이때도
-        동일하게 ({}, usage)가 반환되고 아래 경고 로그가 남습니다.
+        동일하게 ({}, usage)가 반환됩니다. finishReason이 MAX_TOKENS이거나 thoughts 토큰이
+        max_tokens의 50% 이상일 때만 경고 로그를 남깁니다(flash-lite는 매 호출 1~2
+        thoughts 토큰을 보고하므로 그 이하는 경고하지 않으며, 지표 기록은 항상 수행).
     """
     settings = get_settings()
     provider = _detect_provider(settings.grounding_model)
@@ -499,7 +505,7 @@ async def call_grounding(prompt: str) -> tuple[dict, LLMUsage]:
         settings.grounding_model,
         messages,
         _GROUNDING_SYSTEM_PROMPT,
-        max_tokens=64,
+        max_tokens=_GROUNDING_MAX_TOKENS,
         response_schema=grounding_schema,
     )
 
@@ -521,7 +527,11 @@ async def call_grounding(prompt: str) -> tuple[dict, LLMUsage]:
         completion_tokens = usage_raw["output_tokens"]
         thoughts_tokens = usage_raw["thoughts_tokens"]
         finish_reason = usage_raw["finish_reason"]
-        if finish_reason == "MAX_TOKENS" or thoughts_tokens > 0:
+        if (
+            finish_reason == "MAX_TOKENS"
+            or thoughts_tokens
+            >= _GROUNDING_MAX_TOKENS * _GROUNDING_THOUGHTS_WARN_RATIO
+        ):
             logger.warning(
                 "call_grounding: thinking/truncation 감지 model=%s finish=%s thoughts=%d",
                 settings.grounding_model,
