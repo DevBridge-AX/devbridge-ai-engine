@@ -13,10 +13,10 @@ def _settings(**kwargs) -> Settings:
     return Settings(_env_file=None, **kwargs)
 
 
-def test_defaults_keep_current_behaviour():
+def test_defaults_strict_top3():
     s = _settings()
-    assert s.grounding_prompt_version == "v1"
-    assert s.grounding_judge_top_k == 5
+    assert s.grounding_prompt_version == "v2-strict"
+    assert s.grounding_judge_top_k == 3
     assert s.grounding_judge_max_chunk_chars == 0
 
 

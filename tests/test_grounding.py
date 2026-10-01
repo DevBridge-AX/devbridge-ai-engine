@@ -234,7 +234,8 @@ def test_build_prompt_no_marker_when_content_short():
 
 
 def test_build_prompt_defaults_from_settings_keep_five_no_truncation(monkeypatch):
-    _patch_judge_settings(monkeypatch)
+    # settings를 v1 시절 값(top_k=5, 제한 없음)으로 명시해 settings 기반 해석 경로를 검증
+    _patch_judge_settings(monkeypatch, top_k=5, max_chars=0)
     prompt = build_grounding_prompt(_long_chunks(7, 2000), "질문")
     assert "[5]" in prompt and "[6]" not in prompt
     assert "…(생략)" not in prompt

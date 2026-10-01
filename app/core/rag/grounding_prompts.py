@@ -1,8 +1,9 @@
 """
 그라운딩 2차 판정(call_grounding) 시스템 프롬프트 버전 모음.
 
-기본 버전은 config.grounding_prompt_version(기본 "v1")이며, 변형 비교 실험은
-scripts/eval/grounding_eval.py의 --variants로 수행합니다. 기본값 변경은 별도 승인이 필요합니다.
+기본 버전은 config.grounding_prompt_version(기본 "v2-strict")이며, "v1"은 이전 기본 동작으로
+그대로 유지됩니다(GROUNDING_PROMPT_VERSION=v1). 변형 비교 실험은
+scripts/eval/grounding_eval.py의 --variants로 수행합니다.
 """
 
 GROUNDING_PROMPT_V1 = """\
