@@ -13,7 +13,9 @@ LangGraph 전환 없이 단순 파이프라인 함수로 구현합니다.
 시맨틱 캐시(semantic_cache_enabled, 기본 off): 켜지면 rewritten_query 임베딩을 한 번만
 계산해 캐시 조회와 retriever 양쪽에서 재사용합니다. 꺼져 있으면 기존 흐름과 동일합니다.
 hit 시에는 접근 제어를 재검증하고, 저장은 첫 턴 + 정상 그라운딩 + 비어있지 않은 답변일
-때만 수행합니다. 응답 형식(token/done)은 변하지 않으며 hit의 token_usage.main은 0입니다.
+때만 수행합니다. semantic_cache_verify_enabled를 켜면 임계치 아래 후보(최선 1건)를 경량 LLM으로
+재검증해 YES일 때만 hit로 인정합니다(접근 재검증 후에 호출, 실패/타임아웃은 miss, 검증 호출의
+토큰은 token_usage에 넣지 않고 llm_calls의 purpose="cache_verify"로만 기록). 응답 형식(token/done)은 변하지 않으며 hit의 token_usage.main은 0입니다.
 
 관측성: 요청 1건당 구간별 소요 시간(rewrite_ms/retrieve_ms/grounding_ms/llm_ms/
 ttft_ms/total_ms)과 품질 신호(chunk_count/top_similarity/is_groundable/confidence 등)를
@@ -30,6 +32,7 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.core.cache import verifier
 from app.core.cache.semantic_cache import CacheEntry, get_semantic_cache, make_namespace
 from app.core.embeddings.embedder import embed_texts
 from app.core.llm import provider as llm
@@ -114,15 +117,39 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
         # 스트림 도중 인덱싱 무효화가 일어나면 stale 답변을 저장하지 않도록 세대를 잡아 둔다.
         cache_generation = cache.generation(request.workspace_id)
         lookup_start = time.perf_counter()
-        found = cache.lookup(ns, query_embedding)
+        # LLM 재검증이 켜져 있으면 후보 하한(candidate_threshold)까지 내려서 조회한다.
+        # candidate_threshold > threshold면 후보 구간이 없으므로 재검증을 쓰지 않는다.
+        verify_enabled = bool(getattr(settings, "semantic_cache_verify_enabled", False))
+        lookup_floor: float | None = None
+        if verify_enabled:
+            candidate_threshold = settings.semantic_cache_candidate_threshold
+            if candidate_threshold <= cache.threshold:
+                lookup_floor = candidate_threshold
+            else:
+                logger.warning(
+                    "semantic cache verify skipped: candidate_threshold(%s) > threshold(%s)",
+                    candidate_threshold,
+                    cache.threshold,
+                )
+        found = cache.lookup(ns, query_embedding, min_similarity=lookup_floor)
         cache_lookup_ms = (time.perf_counter() - lookup_start) * 1000
         if found is not None:
             entry, similarity = found
             # 접근 제어 재검증: 캐시된 근거 청크가 지금도 이 요청의 접근 범위에 있어야 한다.
+            # (유료 LLM 재검증보다 먼저 수행한다.)
             cited_ids = {c["chunk_id"] for c in entry.citations}
-            if cited_ids and retriever._allowed_chunk_ids(cited_ids, access, db) != cited_ids:
+            access_ok = not (cited_ids and retriever._allowed_chunk_ids(cited_ids, access, db) != cited_ids)
+            if not access_ok:
                 cache.remove(ns, entry)
-            else:
+            verified = access_ok
+            if access_ok and similarity < cache.threshold:
+                # 후보 구간: 최선 후보 1건만 LLM으로 "같은 질문인가" 확인한다. YES만 hit.
+                with timer.measure("cache_verify_ms"):
+                    verdict = await verifier.verify_same_question(rewritten_query, entry.query)
+                verified = verdict.same
+                if verified:
+                    cache.mark_hit(ns, entry)
+            if verified:
                 cache_hit = True
                 cache_similarity = similarity
                 first_token_at: float | None = None

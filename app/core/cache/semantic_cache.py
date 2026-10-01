@@ -98,8 +98,23 @@ class SemanticCache:
         """캐시가 사용하는 현재 시각(CacheEntry.created_at과 같은 시계)."""
         return self._clock()
 
-    def lookup(self, ns: CacheNamespace, embedding: list[float]) -> tuple[CacheEntry, float] | None:
-        """네임스페이스 내 최선의 유사 엔트리와 유사도를 반환합니다. 없으면 None."""
+    @property
+    def threshold(self) -> float:
+        """즉시 hit 기준 유사도."""
+        return self._threshold
+
+    def lookup(
+        self,
+        ns: CacheNamespace,
+        embedding: list[float],
+        min_similarity: float | None = None,
+    ) -> tuple[CacheEntry, float] | None:
+        """네임스페이스 내 최선의 유사 엔트리와 유사도를 반환합니다. 없으면 None.
+
+        min_similarity(기본: threshold)보다 낮은 최선 엔트리는 반환하지 않습니다.
+        threshold 미만이지만 min_similarity 이상인 "후보"는 hits/LRU를 건드리지 않고
+        반환합니다. 호출자가 재검증을 통과시킨 뒤 mark_hit()로 hit를 확정해야 합니다.
+        """
         entries = self._store.get(ns)
         if not entries:
             return None
@@ -117,14 +132,29 @@ class SemanticCache:
             if sim > best_sim:
                 best_sim, best_key = sim, key
 
-        if best_key is None or best_sim < self._threshold:
+        floor = self._threshold if min_similarity is None else min_similarity
+        if best_key is None or best_sim < floor:
             return None
 
         entry = self._store[ns][best_key]
-        entry.hits += 1
-        self._store[ns].move_to_end(best_key)
-        self._lru[ns[0]].move_to_end((ns, best_key))
+        if best_sim >= self._threshold:
+            self._bump(ns, best_key, entry)
         return entry, best_sim
+
+    def mark_hit(self, ns: CacheNamespace, entry: CacheEntry) -> None:
+        """재검증을 통과한 후보 엔트리의 hits/LRU를 갱신합니다(이미 제거됐으면 무시)."""
+        entries = self._store.get(ns)
+        if not entries:
+            return
+        for key, value in entries.items():
+            if value is entry:
+                self._bump(ns, key, entry)
+                return
+
+    def _bump(self, ns: CacheNamespace, key: int, entry: CacheEntry) -> None:
+        entry.hits += 1
+        self._store[ns].move_to_end(key)
+        self._lru[ns[0]].move_to_end((ns, key))
 
     def store(self, ns: CacheNamespace, embedding: list[float], entry: CacheEntry) -> None:
         entry.embedding = _normalize(embedding)
