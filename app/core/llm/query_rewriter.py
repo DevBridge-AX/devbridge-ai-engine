@@ -4,11 +4,19 @@
 turn 1 (conversation_history 길이 = 0): 재구성 없이 user_query 그대로 반환, usage=None.
 turn 2+: 대화 이력을 바탕으로 맥락이 독립적인 검색 쿼리로 재구성 후 반환.
 
+재구성 결과가 비어 있거나 답변형(rewrite_guard.is_answer_like)이면 원문 user_query로
+fallback합니다. 이 경우에도 LLM 호출은 과금되었으므로 usage는 그대로 반환합니다.
+
 모든 LLM 호출은 provider.call_rewrite()를 통해서만 수행합니다.
 """
 
+import logging
+
 from app.core.llm import provider as llm
 from app.core.llm.provider import LLMUsage
+from app.core.llm.rewrite_guard import is_answer_like
+
+logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = """\
 당신은 한국어 기업 지식베이스를 위한 검색 쿼리 최적화 전문가입니다.
@@ -64,7 +72,11 @@ async def rewrite(
     ]
 
     text, usage = await llm.call_rewrite(messages, system_prompt=_SYSTEM_PROMPT)
-    return text.strip(), usage
+    rewritten = text.strip()
+    if rewritten == "" or is_answer_like(user_query, rewritten):
+        logger.warning("query_rewriter: 답변형/빈 출력 감지, 원문 사용 (len=%d)", len(rewritten))
+        return user_query, usage
+    return rewritten, usage
 
 
 def _format_history(history: list[dict]) -> str:
