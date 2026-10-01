@@ -479,6 +479,7 @@ async def _collect_records(
     from app.core.llm import provider as llm
     from app.core.rag import retriever
     from app.core.rag.grounding import build_grounding_prompt
+    from app.core.rag.grounding_prompts import get_grounding_prompt
     from app.db.vector_store import get_vector_store
     from scripts.eval.seed import seed_workspace_async
 
@@ -528,13 +529,16 @@ async def _collect_records(
                     completion_tokens = None
                     parse_ok = True
                     fallback_reason = None
+                    error_type = None
                     try:
                         raw, usage = await llm.call_grounding(
                             prompt, system_prompt=get_grounding_prompt(cfg["prompt_version"])
                         )
-                    except Exception:
+                    except Exception as exc:
                         parse_ok = False
                         fallback_reason = "llm_error"
+                        error_type = f"{type(exc).__name__}: {exc}"[:200]
+                        print(f"[{variant_name}/{case['id']}] call_grounding 실패: {error_type}", file=sys.stderr)
                     else:
                         prompt_tokens = usage.prompt_tokens
                         completion_tokens = usage.completion_tokens
@@ -563,6 +567,7 @@ async def _collect_records(
                             "prompt_tokens": prompt_tokens,
                             "completion_tokens": completion_tokens,
                             "prompt_chars": len(prompt),
+                            "error_type": error_type,
                         }
                     )
             return records
