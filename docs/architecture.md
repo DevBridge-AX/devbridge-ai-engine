@@ -183,6 +183,7 @@ turn 1   : user_query ───────────────────�
 turn 2+  : user_query + conversation_history ─► query_rewriter ─► rewritten_query ─► retriever
 ```
 
+- `retriever` 이전에 시맨틱 캐시 조회가 끼어들 수 있습니다(4.8 참고, 기본 off).
 - `query_rewriter`는 turn 1에는 호출되지 않습니다.
 - turn 2+에서는 대화 히스토리를 참고해 검색에 적합한 독립 쿼리로 재구성합니다.
 - query_rewriter를 포함한 모든 LLM 호출은 `provider.py`의 추상 인터페이스를
@@ -281,6 +282,58 @@ is_groundable / confidence (LLM structured output, 최종 판단)
   `embedding_tokens`)에 일 단위로 누적합니다. `app/api/usage.py`의
   `/usage/summary?workspace_id=`를 통해 Spring에 집계값을 제공하며, 이 레포는
   단가를 알지 못하고 토큰 수치만 반환합니다.
+
+### 4.8 시맨틱 캐시
+
+의미가 같은 질문이 이미 답변된 경우 그라운딩과 메인 LLM 호출을 건너뛰고 저장된
+답변을 재생합니다. `SEMANTIC_CACHE_ENABLED=false`(기본)이면 기존 흐름·호출 횟수·
+임베딩 호출 지점이 그대로입니다.
+
+```
+turn 1/2+ : rewritten_query ─► embed ─► cache.lookup ─┬─ hit  ─► 접근 재검증 ─► token* ─► done
+                                                      └─ miss ─► retriever(임베딩 재사용) ─► grounding ─► main LLM
+                                                                   └─ 첫 턴 + 정상 판정이면 cache.store
+```
+
+- **네임스페이스**: `(workspace_id, role, access_fingerprint, prompt_version, main_model)`.
+  `access_fingerprint`는 `(정렬된 accessible_task_ids, can_view_restricted)`이며,
+  `None`(제한 없음)과 `[]`(공용만)은 서로 다른 값입니다. 하나라도 다르면 hit하지 않습니다.
+- **조회**: `rewritten_query` 임베딩과 네임스페이스 내 엔트리의 코사인 유사도가
+  `SEMANTIC_CACHE_THRESHOLD` 이상인 최선의 엔트리를 hit로 봅니다. 이 임베딩은 retriever에
+  `query_embedding`으로 전달되어 miss 시 중복 호출되지 않습니다.
+- **저장 조건**: 첫 턴(대화 히스토리 없음) + `is_groundable=True` + `fallback_reason=None`
+  (정상 판정) + 비어있지 않은 답변. 스트림이 정상 종료된 경우에만 저장합니다.
+- **hit 안전장치**: 캐시된 `citations[].chunk_id`가 현재 요청의 접근 범위에 여전히
+  속하는지 `_allowed_chunk_ids`로 재검증하고, 실패하면 엔트리를 제거한 뒤 miss로 처리합니다.
+  TTL(`SEMANTIC_CACHE_TTL_SECONDS`)이 지난 엔트리는 조회 중 제거됩니다.
+- **무효화**: 문서·Git·담당자 답변 인덱싱이 성공하면 BM25 무효화와 함께
+  `invalidate_workspace(workspace_id)`로 해당 워크스페이스의 캐시를 비웁니다.
+  워크스페이스당 엔트리 수는 `SEMANTIC_CACHE_MAX_ENTRIES`로 제한되며 LRU로 제거합니다.
+- **응답 형식**: `token`/`done` 이벤트 구조는 변하지 않습니다. 저장된 답변을 약 40자
+  조각의 `token` 이벤트로 재생하고, `done`의 `token_usage.main`은 모델명만 채우고
+  `prompt_tokens`/`completion_tokens`는 0, `grounding`은 `null`입니다. turn 2+의
+  `rewrite` 사용량은 실제 값을 그대로 담습니다.
+- **관측성**: `chat_metrics`에 `cache_enabled`, `cache_hit`, `cache_similarity`,
+  `cache_lookup_ms`가 기록되며 hit 시 `grounding_stage="cache"`입니다.
+  `scripts/metrics_report.py`가 hit율과 hit/miss별 `total_ms`·`ttft_ms` p50/p95를 보여줍니다.
+- **멀티 워커 제한**: 프로세스 메모리 캐시이므로 워커마다 독립이며 인덱싱 무효화가 다른
+  워커에는 전파되지 않습니다. 멀티 워커 운영 시 TTL이 stale 허용 상한이 됩니다.
+- **stale 저장 방지(generation)**: `SemanticCache`는 워크스페이스별 generation 카운터를
+  가지며 `invalidate_workspace`마다 1 증가합니다. 파이프라인은 조회 직전에 값을 잡아 두고,
+  메인 스트림이 끝난 뒤 저장 직전에 값이 달라졌으면(스트림 도중 인덱싱 무효화) 저장하지
+  않습니다. 이전 컨텍스트로 만든 답변이 무효화 이후 TTL 동안 재생되는 것을 막습니다.
+- **한계**:
+  - 조회는 순수 Python 선형 스캔입니다. 네임스페이스당 약 500건·3072차원이면 조회 1회에
+    약 50ms 동기 블로킹이 생길 수 있습니다(엔트리가 적을 때만 1ms 미만).
+  - turn 2+는 `rewritten_query`만으로 첫 턴 답변을 재생하므로, 대화 히스토리에 의존하는
+    답변이 필요한 경우에는 적합하지 않습니다. 또한 네임스페이스에 `user_id`가 없어 같은
+    role·접근 권한을 가진 사용자 사이에서 답변이 재생됩니다. 개인정보가 답변에 반영되는
+    질문이 있다면 주의해야 합니다.
+  - 플래그가 켜지면 `embed_ms`가 `retrieve_ms` 밖에서 측정되고, BM25 검색과 임베딩의
+    병렬 실행이 사라집니다(임베딩을 먼저 기다림). 따라서 off 상태와 `retrieve_ms`를
+    직접 비교할 수 없습니다.
+- **설정**: `SEMANTIC_CACHE_ENABLED`(기본 false), `SEMANTIC_CACHE_THRESHOLD`(0.95),
+  `SEMANTIC_CACHE_TTL_SECONDS`(3600), `SEMANTIC_CACHE_MAX_ENTRIES`(500, 워크스페이스당).
 
 ## 5. DB 마이그레이션 (Alembic)
 

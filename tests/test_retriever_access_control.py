@@ -120,6 +120,32 @@ class TestRetrieveWithAccess:
         result = asyncio.run(retriever.retrieve("q", "ws", db, top_k=5, access=AccessFilter()))
         assert {c.chunk_id for c in result} == {1, 2, 3}
 
+    @pytest.mark.parametrize("bm25_enabled", [True, False])
+    def test_query_embedding_skips_embed_call(self, db, monkeypatch, bm25_enabled):
+        """query_embedding을 넘기면 embed_texts를 호출하지 않고 그 값으로 벡터 검색한다."""
+        received = []
+
+        async def exploding_embed(texts):
+            raise AssertionError("embed_texts must not be called")
+
+        monkeypatch.setattr(retriever, "embed_texts", exploding_embed)
+        monkeypatch.setattr(
+            retriever, "get_settings", lambda: SimpleNamespace(bm25_enabled=bm25_enabled)
+        )
+        monkeypatch.setattr(
+            retriever,
+            "get_vector_store",
+            lambda: SimpleNamespace(
+                search=lambda emb, workspace_id, top_k: received.append(emb)
+                or [{"chunk_id": 1, "score": 0.9}]
+            ),
+        )
+
+        result = asyncio.run(retriever.retrieve("q", "ws", db, top_k=5, query_embedding=[0.5, 0.5]))
+
+        assert received == [[0.5, 0.5]]
+        assert 1 in {c.chunk_id for c in result}
+
 
 class TestAclRefetch:
     """필터 후 top_k 미달 + 후보 페이지가 가득 찬 경우에만 1회 재조회한다."""

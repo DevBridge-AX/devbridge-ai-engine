@@ -232,3 +232,35 @@ class TestPartialSuccess:
         assert record["failed_commit_count"] == 0
         assert record["error_type"] is None
         assert env.invalidated == ["ws-1"]
+
+
+class TestSemanticCacheInvalidation:
+
+    def test_success_invalidates_semantic_cache(self, env, monkeypatch, metrics_tmp_dir):
+        invalidated: list[str] = []
+        monkeypatch.setattr(
+            git_ingestion,
+            "get_semantic_cache",
+            lambda: SimpleNamespace(invalidate_workspace=invalidated.append),
+        )
+
+        asyncio.run(git_ingestion.ingest_git_commits("ws-1", "src-1", [_commit("aaa1111")]))
+
+        assert invalidated == ["ws-1"]
+
+    def test_all_failed_skips_invalidation(self, env, monkeypatch, metrics_tmp_dir):
+        invalidated: list[str] = []
+        monkeypatch.setattr(
+            git_ingestion,
+            "get_semantic_cache",
+            lambda: SimpleNamespace(invalidate_workspace=invalidated.append),
+        )
+
+        async def failing_embed(texts):
+            raise RuntimeError("embedding api down")
+
+        monkeypatch.setattr(git_ingestion, "embed_texts", failing_embed)
+
+        asyncio.run(git_ingestion.ingest_git_commits("ws-1", "src-1", [_commit("aaa1111")]))
+
+        assert invalidated == []

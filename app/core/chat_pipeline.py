@@ -5,9 +5,15 @@ run()은 ChatRequest를 받아 ChatEvent(token/done)를 순서대로 yield합니
 LangGraph 전환 없이 단순 파이프라인 함수로 구현합니다.
 
 흐름:
-  truncate_history → query_rewriter → retriever → grounding
+  truncate_history → query_rewriter → [semantic_cache 조회] → retriever → grounding
+    → [cache hit] 저장된 답변을 token* → done 으로 재생 (그라운딩·메인 LLM 생략)
     → [실패] done(is_groundable=False)
-    → [통과] persona_prompt + call_main_stream → token* → done
+    → [통과] persona_prompt + call_main_stream → token* → [첫 턴이면 cache 저장] → done
+
+시맨틱 캐시(semantic_cache_enabled, 기본 off): 켜지면 rewritten_query 임베딩을 한 번만
+계산해 캐시 조회와 retriever 양쪽에서 재사용합니다. 꺼져 있으면 기존 흐름과 동일합니다.
+hit 시에는 접근 제어를 재검증하고, 저장은 첫 턴 + 정상 그라운딩 + 비어있지 않은 답변일
+때만 수행합니다. 응답 형식(token/done)은 변하지 않으며 hit의 token_usage.main은 0입니다.
 
 관측성: 요청 1건당 구간별 소요 시간(rewrite_ms/retrieve_ms/grounding_ms/llm_ms/
 ttft_ms/total_ms)과 품질 신호(chunk_count/top_similarity/is_groundable/confidence 등)를
@@ -16,6 +22,7 @@ app.core.metrics.record_metric으로 기록합니다(조기 종료·정상 경�
 """
 
 import hashlib
+import logging
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
@@ -23,6 +30,8 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.core.cache.semantic_cache import CacheEntry, get_semantic_cache, make_namespace
+from app.core.embeddings.embedder import embed_texts
 from app.core.llm import provider as llm
 from app.core.llm import query_rewriter
 from app.core.llm.persona_prompts import get_system_prompt
@@ -39,6 +48,8 @@ from app.schemas.chat import (
     TokenUsage,
     TokenUsageDetail,
 )
+
+logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "persona-v1"
 
@@ -78,9 +89,95 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
     )
     access_filtered = not access.is_unrestricted
 
+    settings = get_settings()
+    cache_enabled = bool(getattr(settings, "semantic_cache_enabled", False))
+    query_embedding: list[float] | None = None
+    cache_hit = False
+    cache_similarity: float | None = None
+    cache_lookup_ms: float | None = None
+    cache = None
+    ns = None
+    cache_generation = 0
+
+    if cache_enabled:
+        cache = get_semantic_cache()
+        with timer.measure("embed_ms"):
+            query_embedding = (await embed_texts([rewritten_query])).embeddings[0]
+        ns = make_namespace(
+            request.workspace_id,
+            request.role,
+            request.accessible_task_ids,
+            request.can_view_restricted,
+            PROMPT_VERSION,
+            settings.main_model,
+        )
+        # 스트림 도중 인덱싱 무효화가 일어나면 stale 답변을 저장하지 않도록 세대를 잡아 둔다.
+        cache_generation = cache.generation(request.workspace_id)
+        lookup_start = time.perf_counter()
+        found = cache.lookup(ns, query_embedding)
+        cache_lookup_ms = (time.perf_counter() - lookup_start) * 1000
+        if found is not None:
+            entry, similarity = found
+            # 접근 제어 재검증: 캐시된 근거 청크가 지금도 이 요청의 접근 범위에 있어야 한다.
+            cited_ids = {c["chunk_id"] for c in entry.citations}
+            if cited_ids and retriever._allowed_chunk_ids(cited_ids, access, db) != cited_ids:
+                cache.remove(ns, entry)
+            else:
+                cache_hit = True
+                cache_similarity = similarity
+                first_token_at: float | None = None
+                for piece in _split_answer(entry.answer):
+                    if first_token_at is None:
+                        first_token_at = time.perf_counter()
+                    yield ChatEvent(event="token", data={"text": piece})
+                ttft_ms = (first_token_at - total_start) * 1000 if first_token_at is not None else None
+                token_usage = TokenUsage(
+                    main=TokenUsageDetail(model=settings.main_model, prompt_tokens=0, completion_tokens=0),
+                    rewrite=_to_usage_detail(rewrite_usage) if rewrite_usage else None,
+                    grounding=None,
+                    context_truncated=context_truncated,
+                )
+                cached_citations = [Citation(**c) for c in entry.citations]
+                _record_chat_metric(
+                    request=request,
+                    timer=timer,
+                    total_start=total_start,
+                    ttft_ms=ttft_ms,
+                    turn=turn,
+                    chunk_count=len(cached_citations),
+                    top_similarity=max((c.similarity_score for c in cached_citations), default=0.0),
+                    grounding_result=GroundingResult(is_groundable=True, confidence=entry.confidence),
+                    grounding_stage="cache",
+                    access_filtered=access_filtered,
+                    token_usage=token_usage,
+                    cache_enabled=True,
+                    cache_hit=True,
+                    cache_similarity=cache_similarity,
+                    cache_lookup_ms=cache_lookup_ms,
+                )
+                yield ChatEvent(
+                    event="done",
+                    data=ChatDoneEvent(
+                        citations=cached_citations,
+                        is_groundable=True,
+                        confidence=entry.confidence,
+                        suggested_owner_id=entry.suggested_owner_id,
+                        prompt_version=PROMPT_VERSION,
+                        token_usage=token_usage,
+                    ).model_dump(),
+                )
+                return
+
+    retrieve_kwargs = {"query_embedding": query_embedding} if cache_enabled else {}
     with timer.measure("retrieve_ms"):
         chunks = await retriever.retrieve(
-            rewritten_query, request.workspace_id, db, top_k=5, access=access, timer=timer
+            rewritten_query,
+            request.workspace_id,
+            db,
+            top_k=5,
+            access=access,
+            timer=timer,
+            **retrieve_kwargs,
         )
 
     with timer.measure("grounding_ms"):
@@ -96,8 +193,14 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
     citations = _build_citations(chunks)
     top_similarity = max((c.similarity_score for c in chunks), default=0.0)
 
+    cache_fields = {
+        "cache_enabled": cache_enabled,
+        "cache_hit": False,
+        "cache_similarity": None,
+        "cache_lookup_ms": cache_lookup_ms,
+    }
+
     if not grounding_result.is_groundable:
-        settings = get_settings()
         token_usage = TokenUsage(
             main=TokenUsageDetail(
                 model=settings.main_model,
@@ -120,6 +223,7 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
             grounding_stage=grounding_stage,
             access_filtered=access_filtered,
             token_usage=token_usage,
+            **cache_fields,
         )
         yield ChatEvent(
             event="done",
@@ -138,9 +242,9 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
     system_prompt = get_system_prompt(request.role, retrieved_context, truncated_history)
     messages = _build_messages(truncated_history, request.content)
 
-    settings = get_settings()
     main_usage: LLMUsage | None = None
     first_token_at: float | None = None
+    answer_parts: list[str] = []
     with timer.measure("llm_ms"):
         async for text, usage in llm.call_main_stream(
             messages, system_prompt, max_tokens=settings.main_max_tokens
@@ -148,6 +252,7 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
             if text is not None:
                 if first_token_at is None:
                     first_token_at = time.perf_counter()
+                answer_parts.append(text)
                 yield ChatEvent(event="token", data={"text": text})
             else:
                 main_usage = usage
@@ -175,7 +280,33 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
         grounding_stage=grounding_stage,
         access_filtered=access_filtered,
         token_usage=token_usage,
+        **cache_fields,
     )
+
+    answer_text = "".join(answer_parts)
+    if (
+        cache_enabled
+        and is_first_turn
+        and grounding_result.is_groundable
+        and grounding_result.fallback_reason is None
+        and answer_text.strip()
+    ):
+        if cache.generation(request.workspace_id) != cache_generation:
+            logger.debug("semantic cache store skipped: workspace invalidated during generation")
+        else:
+            cache.store(
+                ns,
+                query_embedding,
+                CacheEntry(
+                    embedding=[],
+                    query=rewritten_query,
+                    answer=answer_text,
+                    citations=[c.model_dump() for c in citations],
+                    confidence=grounding_result.confidence,
+                    suggested_owner_id=None,
+                    created_at=cache.now(),
+                ),
+            )
 
     yield ChatEvent(
         event="done",
@@ -203,6 +334,10 @@ def _record_chat_metric(
     grounding_stage: str,
     access_filtered: bool,
     token_usage: TokenUsage,
+    cache_enabled: bool = False,
+    cache_hit: bool = False,
+    cache_similarity: float | None = None,
+    cache_lookup_ms: float | None = None,
 ) -> None:
     """chat 응답 1건의 지표를 기록합니다.
 
@@ -247,8 +382,17 @@ def _record_chat_metric(
             token_usage.grounding.completion_tokens if token_usage.grounding else None
         ),
         "context_truncated": token_usage.context_truncated,
+        "cache_enabled": cache_enabled,
+        "cache_hit": cache_hit,
+        "cache_similarity": cache_similarity,
+        "cache_lookup_ms": cache_lookup_ms,
     }
     record_metric("chat_metrics", payload)
+
+
+def _split_answer(answer: str, size: int = 40) -> list[str]:
+    """캐시된 답변을 SSE token 이벤트용 조각(기본 40자)으로 나눕니다."""
+    return [answer[i : i + size] for i in range(0, len(answer), size)]
 
 
 def _build_citations(chunks: list[RetrievedChunk]) -> list[Citation]:

@@ -38,6 +38,7 @@ from pathlib import Path
 from sqlalchemy import update
 
 from app.config import get_settings
+from app.core.cache.semantic_cache import get_semantic_cache
 from app.core.embeddings.embedder import embed_texts
 from app.core.metrics import StageTimer, record_metric
 from app.core.rag.bm25_index import get_bm25_manager
@@ -197,6 +198,7 @@ async def _run(
             log_embedding_usage(db, workspace_id, result.embedding_model, result.total_tokens)
 
             get_bm25_manager().invalidate(workspace_id)
+            get_semantic_cache().invalidate_workspace(workspace_id)
     except Exception as exc:
         _record_ingestion_metric(
             timer, total_start, workspace_id, knowledge_document_id, doc_type,

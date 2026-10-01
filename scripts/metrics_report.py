@@ -163,6 +163,36 @@ def compute_llm_calls_breakdown(records: list[dict]) -> dict[tuple[str, str], di
     return breakdown
 
 
+def compute_cache_summary(records: list[dict]) -> dict[str, object] | None:
+    """chat_metrics 레코드에서 시맨틱 캐시 hit율과 hit/miss별 지연 백분위수를 계산합니다.
+
+    cache_enabled가 True인 레코드가 하나도 없으면 None을 반환합니다.
+    """
+    enabled = [r for r in records if r.get("cache_enabled") is True]
+    if not enabled:
+        return None
+
+    hits = [r for r in enabled if r.get("cache_hit") is True]
+    misses = [r for r in enabled if r.get("cache_hit") is not True]
+
+    def percentiles(group: list[dict], key: str) -> tuple[float, float] | None:
+        values = [r[key] for r in group if _is_number(r.get(key))]
+        if not values:
+            return None
+        return _percentile(values, 50), _percentile(values, 95)
+
+    return {
+        "enabled_count": len(enabled),
+        "hit_count": len(hits),
+        "hit_rate": len(hits) / len(enabled) * 100,
+        "latency": {
+            (label, key): percentiles(group, key)
+            for label, group in (("hit", hits), ("miss", misses))
+            for key in ("total_ms", "ttft_ms")
+        },
+    }
+
+
 def render_markdown(records_by_event: dict[str, list[dict]]) -> str:
     """이벤트별 집계 결과를 markdown 문자열로 렌더링합니다."""
     lines: list[str] = ["# 메트릭 집계 리포트", ""]
@@ -198,6 +228,27 @@ def render_markdown(records_by_event: dict[str, list[dict]]) -> str:
             lines.append("- 실패 원인(예외 클래스) 분포: " + ", ".join(
                 f"{k}={v}" for k, v in sorted(failure_dist["error_type"].items())
             ))
+            lines.append("")
+
+        if event == "chat_metrics":
+            cache_summary = compute_cache_summary(records)
+            if cache_summary is None:
+                lines.append("- 시맨틱 캐시 hit율: n/a (cache_enabled 레코드 없음)")
+            else:
+                lines.append(
+                    f"- 시맨틱 캐시 hit율: {cache_summary['hit_rate']:.1f}% "
+                    f"({cache_summary['hit_count']}/{cache_summary['enabled_count']})"
+                )
+                lines.append("")
+                lines.append("| 구분 | 지표 | p50(ms) | p95(ms) |")
+                lines.append("| --- | --- | --- | --- |")
+                for (label, key), pcts in cache_summary["latency"].items():
+                    if pcts is None:
+                        lines.append(f"| cache_hit={label == 'hit'} | {key} | - | - |")
+                    else:
+                        lines.append(
+                            f"| cache_hit={label == 'hit'} | {key} | {pcts[0]:.1f} | {pcts[1]:.1f} |"
+                        )
             lines.append("")
 
         if event == "llm_calls":

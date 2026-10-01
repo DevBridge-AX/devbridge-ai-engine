@@ -30,6 +30,7 @@ import httpx
 from sqlalchemy import select
 
 from app.config import get_settings
+from app.core.cache.semantic_cache import get_semantic_cache
 from app.core.embeddings.embedder import embed_texts
 from app.core.llm.provider import call_structured
 from app.core.metrics import record_metric
@@ -210,6 +211,7 @@ async def _run(
 
     if len(failures) < len(commits):
         get_bm25_manager().invalidate(workspace_id)
+        get_semantic_cache().invalidate_workspace(workspace_id)
 
     embedding_provider_tokens = (
         embedding_provider_tokens_total if embedding_provider_tokens_complete else None

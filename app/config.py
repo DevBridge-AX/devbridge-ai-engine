@@ -92,6 +92,16 @@ class Settings(BaseSettings):
     bm25_enabled: bool = True
     bm25_cache_ttl_seconds: int = 600
 
+    # 시맨틱 캐시 (app/core/cache/semantic_cache.py)
+    # 의미가 같은 질문이 이미 답변된 경우 그라운딩·메인 LLM을 건너뛰고 저장된 답변을 재생합니다.
+    semantic_cache_enabled: bool = False
+    # 쿼리 임베딩 코사인 유사도가 이 값 이상이면 hit
+    semantic_cache_threshold: float = 0.95
+    # 엔트리 유효 시간(초)
+    semantic_cache_ttl_seconds: int = 3600
+    # 워크스페이스당 최대 엔트리 수 (초과 시 가장 오래 쓰이지 않은 것부터 제거)
+    semantic_cache_max_entries: int = 500
+
     # Spring backend 연동
     spring_backend_base_url: str = "http://localhost:8080"
     spring_user_lookup_path: str = "/internal/users/lookup"
