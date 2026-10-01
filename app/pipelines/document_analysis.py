@@ -13,12 +13,15 @@ Task 문서 AI 분석 파이프라인.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import re
 
 from app.config import get_settings
 from app.core.llm.provider import call_structured
 from app.schemas.analysis import DocumentAnalysisRequest, DocumentAnalysisResponse
+
+logger = logging.getLogger(__name__)
 
 TEXT_EXTENSIONS = {
     ".txt",
@@ -107,7 +110,20 @@ async def analyze_document(
     mode = settings.ai_analysis_mode.lower().strip()
 
     if mode == "llm":
-        return await _llm_analyze_document(request)
+        try:
+            return await _llm_analyze_document(request)
+        except Exception:
+            logger.warning(
+                "document_analysis: LLM 분석 실패. fallback 결과로 대체합니다. "
+                "document_id=%s",
+                request.document_id,
+                exc_info=True,
+            )
+            return _fallback_analyze_document(
+                request=request,
+                model=settings.document_analysis_model,
+                mode="llm_fallback",
+            )
 
     return _fallback_analyze_document(
         request=request,

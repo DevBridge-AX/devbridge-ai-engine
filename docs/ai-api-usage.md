@@ -133,6 +133,20 @@ Gemini의 `responseSchema` (Structured Output)를 사용하여 JSON 형식을 �
 
 `AI_ANALYSIS_MODE=llm`으로 변경하면 실제 LLM 분석을 수행합니다. 현재는 fallback 모드로 파일명/미리보기 기반 규칙 분석만 수행.
 
+**LLM 실패 시 fallback**: `call_structured()`가 HTTP 오류(`httpx.HTTPStatusError` 등)나
+JSON 파싱 오류를 던지면 `analyze_document()`가 이를 잡아 fallback 규칙 분석 결과로
+대체하고 `logger.warning()`으로 원인을 남깁니다(예외를 그대로 전파해 API 500으로
+이어지던 기존 동작을 git 커밋 분석과 동일한 패턴으로 통일). 이때 응답의 `mode`는
+`"llm_fallback"`으로 표시되어 정상 `"fallback"` 모드와 구분됩니다. `mode` 필드는
+자유 문자열(`str`)이며, Spring `DocumentAnalysisResponse.mode`도 값으로 분기하지 않고
+저장만 하는 것을 확인했습니다(2026-10-01 조사, Spring 레포 읽기 전용 참조).
+
+**건당 토큰 비용** (라이브 검증 1회차 기준, `llm_calls.jsonl` purpose=`document_analysis`
+집계 — `RUN_LIVE_LLM=1 python3 -m pytest -m live -q tests/live/test_analysis_live.py -s`
+실행 후 기입):
+- prompt_tokens 평균: 737 (2026-10-01 라이브 1회차, claude-sonnet-4-6, 표본 3건(md/py/pdf 메타))
+- completion_tokens 평균: 422 / 지연 p50 6.7s · p95 8.0s
+
 ---
 
 ## 6. Git 커밋 AI 분석 (선택적)
@@ -143,6 +157,46 @@ Gemini의 `responseSchema` (Structured Output)를 사용하여 JSON 형식을 �
 | 호출 함수 | `call_structured()` → MAIN_MODEL |
 | 현재 모드 | `AI_ANALYSIS_MODE` 설정에 따름 |
 | 호출 시점 | Git 커밋 인덱싱 시 (`pipelines/git_ingestion.py`) |
+
+**한국어 출력 규칙 / PII 최소화**: 커밋 분석 system prompt에 문서 분석과 동일한 취지의
+"summary/next_action은 반드시 한국어로 작성" 규칙을 추가했습니다(`risk_level`/
+`impact_area`는 정해진 영문 값을 그대로 유지). `author_email`은 PII 최소화를 위해 LLM
+프롬프트 입력(커밋 메타데이터, diff 미리보기 헤더 포함)에서 완전히 제외했습니다.
+`GIT_COMMITS.author_email` 컬럼 저장과 임베딩/RAG 청크용 commit 텍스트에는 영향이
+없습니다.
+
+**비용 주의 — 커밋 수만큼 호출**: 커밋 분석은 **git push 1회에 포함된 커밋 수만큼**
+`call_structured()`를 호출합니다(예: 30개 커밋을 한 번에 push하면 30회 호출). 대량
+push 시 비용/지연이 선형으로 증가하므로, 필요 시 후속 과제로 배치당 분석 커밋 수를
+제한하는 `COMMIT_ANALYSIS_MAX_PER_BATCH`(초과분은 fallback 처리) 도입을 검토할 수
+있습니다(이번 범위에서는 구현하지 않음, 아이디어만 기록).
+
+**건당 토큰 비용** (라이브 검증 1회차 기준, purpose=`commit_analysis` 집계):
+- prompt_tokens 평균: 673 (2026-10-01 라이브 1회차, claude-sonnet-4-6, 표본 3건(소형 diff))
+- completion_tokens 평균: 231 / 지연 p50 5.0s · p95 5.8s
+
+---
+
+## 7. 워크스페이스 대시보드 AI 요약 (선택적)
+
+| 항목 | 값 |
+|---|---|
+| 용도 | 워크스페이스 대시보드 상태 요약(3~5문장 한글) 생성 |
+| 환경변수 | `AI_ANALYSIS_MODE` |
+| 현재 모드 | `fallback` (LLM 미사용, 메트릭 기반 규칙 템플릿) |
+| LLM 모드 시 | `call_structured()` → MAIN_MODEL 사용 |
+| 호출 함수 | `workspace_summary.generate_workspace_summary()` |
+
+`AI_ANALYSIS_MODE=llm`이고 `GMS_API_KEY`가 설정된 경우에만 LLM 요약을 시도합니다(그
+외에는 항상 fallback). LLM 호출이 예외를 던지면 fallback 규칙 요약으로 대체하고
+`logger.warning()`을 남기며, 이때 응답 `mode`는 `"llm_fallback"`으로 표시됩니다.
+LLM 호출 자체는 성공했지만 `summary`가 빈 문자열인 경우는 기존과 동일하게 fallback
+문구로 채우되 `mode`는 `"llm"`을 유지합니다(구분: 호출 실패=`llm_fallback`, 호출
+성공+빈 값=`llm`).
+
+**건당 토큰 비용** (라이브 검증 1회차 기준, purpose=`workspace_summary` 집계):
+- prompt_tokens 평균: 259 (2026-10-01 라이브 1회차, claude-sonnet-4-6, 표본 1건)
+- completion_tokens 평균: 331 / 지연 p50 6.2s · p95 6.2s
 
 ---
 
@@ -250,6 +304,10 @@ RUN_LIVE_LLM=1 python3 -m pytest -m live -q tests/live
 3. `/chat` SSE 계약(turn1, 코퍼스 밖 질문 not-groundable, 멀티턴 rewrite, 페르소나
    6종)과 `provider.py`의 grounding/embedding/call_structured를 실제 GMS 응답으로
    검증합니다. 페르소나 답변은 품질 판정 없이 앞 200자만 결과 파일에 남깁니다.
+4. `tests/live/test_analysis_live.py`는 이 모듈 범위에서만 `AI_ANALYSIS_MODE=llm`으로
+   전환해(운영 기본값 `fallback`은 불변) 문서/커밋/워크스페이스 요약 분석 3종의 llm
+   계약을 검증합니다. 단독 실행: `RUN_LIVE_LLM=1 python3 -m pytest -m live -q
+   tests/live/test_analysis_live.py -s`.
 
 ### 비용 상한 설계
 
