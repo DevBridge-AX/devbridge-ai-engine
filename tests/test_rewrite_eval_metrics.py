@@ -17,8 +17,8 @@ class TestIsAnswerLike:
         assert is_answer_like("그거 타임아웃 몇 초야?", "결제 API 타임아웃 시간") is False
 
     def test_length_over_four_times_original_is_answer_like(self):
-        original = "그거 뭐야?"  # 5자
-        rewritten = "그것" * 15  # 30자 > 5*4
+        original = "그거 뭐야?"  # 5자 → 4배(20자)보다 하한 40자가 우선
+        rewritten = "그것" * 21  # 42자 > 40
         assert is_answer_like(original, rewritten) is True
 
     def test_length_over_80_chars_is_answer_like(self):
@@ -36,7 +36,7 @@ class TestIsAnswerLike:
         assert is_answer_like("질문", "재시도는 2회까지 진행합니다.") is True
 
     def test_quotes_is_answer_like(self):
-        assert is_answer_like("질문", '재작성된 "쿼리"') is True
+        assert is_answer_like("질문", '"재작성된 쿼리"') is True
 
     def test_prefix_output_colon_is_answer_like(self):
         assert is_answer_like("질문", "출력: 결제 API 타임아웃") is True

@@ -71,6 +71,54 @@ async def test_result_is_stripped():
 
     with patch("app.core.llm.query_rewriter.llm.call_rewrite", new_callable=AsyncMock) as mock_rewrite:
         mock_rewrite.return_value = ("  공백이 있는 쿼리  ", _MOCK_USAGE)
-        result_query, _ = await rewrite("질문", conversation_history=history)
+        result_query, _ = await rewrite("공백 있는 쿼리 질문", conversation_history=history)
 
     assert result_query == "공백이 있는 쿼리"
+
+
+_HISTORY = [{"role": "user", "content": "질문"}]
+
+
+async def test_answer_like_output_falls_back_to_original(caplog):
+    answer = "결제 API의 타임아웃은 30초로 설정되어 있으며 재시도는 최대 두 번까지 진행되는 구조입니다."
+    with patch("app.core.llm.query_rewriter.llm.call_rewrite", new_callable=AsyncMock) as mock_rewrite:
+        mock_rewrite.return_value = (answer, _MOCK_USAGE)
+        with caplog.at_level("WARNING", logger="app.core.llm.query_rewriter"):
+            result_query, usage = await rewrite("그거 타임아웃 몇 초야?", conversation_history=_HISTORY)
+
+    assert result_query == "그거 타임아웃 몇 초야?"
+    assert usage == _MOCK_USAGE
+    records = [r for r in caplog.records if r.name == "app.core.llm.query_rewriter"]
+    assert len(records) == 1
+    assert records[0].levelname == "WARNING"
+    assert answer not in caplog.text
+
+
+async def test_empty_output_falls_back_to_original():
+    with patch("app.core.llm.query_rewriter.llm.call_rewrite", new_callable=AsyncMock) as mock_rewrite:
+        mock_rewrite.return_value = ("   ", _MOCK_USAGE)
+        result_query, usage = await rewrite("원래 질문", conversation_history=_HISTORY)
+
+    assert result_query == "원래 질문"
+    assert usage == _MOCK_USAGE
+
+
+async def test_guard_false_returns_answer_like_output_as_is():
+    answer = "결제 API의 타임아웃은 30초로 설정되어 있으며 재시도는 최대 두 번까지 진행되는 구조입니다."
+    with patch("app.core.llm.query_rewriter.llm.call_rewrite", new_callable=AsyncMock) as mock_rewrite:
+        mock_rewrite.return_value = (f" {answer} ", _MOCK_USAGE)
+        result_query, usage = await rewrite(
+            "그거 타임아웃 몇 초야?", conversation_history=_HISTORY, guard=False
+        )
+
+    assert result_query == answer
+    assert usage == _MOCK_USAGE
+
+
+async def test_normal_rewrite_passes_through():
+    with patch("app.core.llm.query_rewriter.llm.call_rewrite", new_callable=AsyncMock) as mock_rewrite:
+        mock_rewrite.return_value = ("  결제 API 타임아웃 시간 \n", _MOCK_USAGE)
+        result_query, usage = await rewrite("그거 타임아웃 몇 초야?", conversation_history=_HISTORY)
+
+    assert result_query == "결제 API 타임아웃 시간"
+    assert usage == _MOCK_USAGE
