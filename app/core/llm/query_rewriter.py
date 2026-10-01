@@ -46,12 +46,16 @@ _SYSTEM_PROMPT = """\
 async def rewrite(
     user_query: str,
     conversation_history: list[dict],
+    *,
+    guard: bool = True,
 ) -> tuple[str, LLMUsage | None]:
     """쿼리를 검색에 최적화된 독립적인 쿼리로 재구성합니다.
 
     Args:
         user_query: 현재 사용자 입력.
         conversation_history: 이전 대화 목록 [{"role": "user"/"assistant", "content": "..."}, ...].
+        guard: False이면 답변형/빈 출력 가드를 건너뛰고 모델 출력을 그대로(strip만) 반환합니다.
+            모델 출력 품질을 측정하는 평가 스크립트 전용이며, 서비스 경로는 기본값(True)을 씁니다.
 
     Returns:
         (재구성된 쿼리 또는 원본, LLMUsage | None). turn 1이면 usage=None.
@@ -73,6 +77,8 @@ async def rewrite(
 
     text, usage = await llm.call_rewrite(messages, system_prompt=_SYSTEM_PROMPT)
     rewritten = text.strip()
+    if not guard:
+        return rewritten, usage
     if rewritten == "" or is_answer_like(user_query, rewritten):
         logger.warning("query_rewriter: 답변형/빈 출력 감지, 원문 사용 (len=%d)", len(rewritten))
         return user_query, usage

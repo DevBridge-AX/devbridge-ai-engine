@@ -118,7 +118,7 @@ async def _run_model(
         prompt_tokens = completion_tokens = None
         error: str | None = None
         try:
-            rewritten, usage = await query_rewriter.rewrite(question, history)
+            rewritten, usage = await query_rewriter.rewrite(question, history, guard=False)
             if usage is not None:
                 prompt_tokens = usage.prompt_tokens
                 completion_tokens = usage.completion_tokens

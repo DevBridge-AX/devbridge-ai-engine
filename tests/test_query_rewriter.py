@@ -103,6 +103,18 @@ async def test_empty_output_falls_back_to_original():
     assert usage == _MOCK_USAGE
 
 
+async def test_guard_false_returns_answer_like_output_as_is():
+    answer = "결제 API의 타임아웃은 30초로 설정되어 있으며 재시도는 최대 두 번까지 진행되는 구조입니다."
+    with patch("app.core.llm.query_rewriter.llm.call_rewrite", new_callable=AsyncMock) as mock_rewrite:
+        mock_rewrite.return_value = (f" {answer} ", _MOCK_USAGE)
+        result_query, usage = await rewrite(
+            "그거 타임아웃 몇 초야?", conversation_history=_HISTORY, guard=False
+        )
+
+    assert result_query == answer
+    assert usage == _MOCK_USAGE
+
+
 async def test_normal_rewrite_passes_through():
     with patch("app.core.llm.query_rewriter.llm.call_rewrite", new_callable=AsyncMock) as mock_rewrite:
         mock_rewrite.return_value = ("  결제 API 타임아웃 시간 \n", _MOCK_USAGE)

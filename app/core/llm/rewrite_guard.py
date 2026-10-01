@@ -14,16 +14,20 @@ _MAX_LENGTH = 80
 def is_answer_like(original: str, rewritten: str) -> bool:
     """rewrite 결과가 재작성된 '쿼리'가 아니라 질문에 대한 '답변'처럼 보이는지 판별합니다.
 
-    아래 중 하나라도 해당하면 답변형(True)으로 판정합니다.
+    출력이 원문과 (strip 후) 같으면 잡담 passthrough이므로 항상 False입니다.
+    그 외에 아래 중 하나라도 해당하면 답변형(True)으로 판정합니다.
     - 길이가 원래 질문의 4배 초과(단, 하한 40자 — 짧은 후속 질문("그거 어디?")을 맥락
       복원한 정상 결과를 답변형으로 오판하지 않도록) 또는 80자 초과
     - 줄바꿈 포함
     - "~니다."로 끝남(입니다/습니다/합니다/됩니다 등 서술형 종결)
-    - 따옴표류 문자 포함
+    - 출력 전체가 따옴표류로 감싸져 있음(쿼리 중간의 부분 따옴표는 정상으로 본다)
     - "출력:" 또는 "재작성:" 접두어로 시작
     """
     stripped = rewritten.strip()
     if not stripped:
+        return False
+
+    if stripped == original.strip():
         return False
 
     if len(stripped) > max(len(original) * 4, _MIN_LENGTH_FLOOR) or len(stripped) > _MAX_LENGTH:
@@ -35,7 +39,7 @@ def is_answer_like(original: str, rewritten: str) -> bool:
     if stripped.endswith(_ANSWER_LIKE_ENDINGS):
         return True
 
-    if any(q in stripped for q in _QUOTE_CHARS):
+    if stripped[0] in _QUOTE_CHARS and stripped[-1] in _QUOTE_CHARS:
         return True
 
     if stripped.startswith(_ANSWER_LIKE_PREFIXES):

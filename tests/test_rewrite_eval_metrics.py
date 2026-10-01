@@ -36,7 +36,7 @@ class TestIsAnswerLike:
         assert is_answer_like("질문", "재시도는 2회까지 진행합니다.") is True
 
     def test_quotes_is_answer_like(self):
-        assert is_answer_like("질문", '재작성된 "쿼리"') is True
+        assert is_answer_like("질문", '"재작성된 쿼리"') is True
 
     def test_prefix_output_colon_is_answer_like(self):
         assert is_answer_like("질문", "출력: 결제 API 타임아웃") is True
