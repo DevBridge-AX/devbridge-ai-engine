@@ -21,3 +21,12 @@ def test_answer_like_true(rewritten):
 
 def test_normal_query_is_not_answer_like():
     assert is_answer_like("그거 타임아웃 몇 초야?", "결제 API 타임아웃 시간") is False
+
+
+def test_short_followup_expanded_within_floor_is_not_answer_like():
+    """짧은 후속 질문을 맥락 복원한 결과(40자 이하)는 4배를 넘어도 답변형이 아니다."""
+    assert is_answer_like("그거 어디?", "결제 API 소스 코드 위치") is False
+
+
+def test_short_followup_over_floor_is_answer_like():
+    assert is_answer_like("왜?", "결제 API는 TossPayments와 연동되어 카드 및 계좌이체 결제를 처리하는 모듈") is True
