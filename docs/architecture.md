@@ -187,9 +187,9 @@ turn 2+  : user_query + conversation_history ─► query_rewriter ─► rewrit
 - turn 2+에서는 대화 히스토리를 참고해 검색에 적합한 독립 쿼리로 재구성합니다.
 - query_rewriter를 포함한 모든 LLM 호출은 `provider.py`의 추상 인터페이스를
   통해서만 이루어집니다. 현재 기본 설정(`.env`)은 메인 답변 생성/페르소나
-  변환/그라운딩 판정에 `claude-sonnet-4-6`, 쿼리 재구성에
-  `claude-haiku-4-5-20251001`을 사용합니다. 모델 교체는 `.env` 값만 변경하면
-  됩니다.
+  변환에 `claude-sonnet-4-6`, 그라운딩 판정에 `gemini-2.5-flash-lite`
+  (`GROUNDING_MODEL`), 쿼리 재구성에 `claude-haiku-4-5-20251001`을 사용합니다.
+  모델 교체는 `.env` 값만 변경하면 됩니다.
 
 ### 4.3 페르소나 변환 (6종)
 
@@ -232,6 +232,15 @@ is_groundable / confidence (LLM structured output, 최종 판단)
 
 임계치 비교 및 UC-04 알림 트리거는 Spring의 책임이며, 이 레포는 산출된 값만
 반환합니다.
+
+2차 판정(LLM) 관련 설정(`.env`, 기본값은 현행 동작과 동일):
+
+- `GROUNDING_PROMPT_VERSION=v1` — 판정 시스템 프롬프트 버전(`v1` | `v2-strict`,
+  `app/core/rag/grounding_prompts.py`). 잘못된 값은 기동 시 검증 오류가 됩니다.
+- `GROUNDING_JUDGE_TOP_K=5` — 판정 프롬프트에 넣는 청크 수(1 이상, retrieve
+  top_k와 별개).
+- `GROUNDING_JUDGE_MAX_CHUNK_CHARS=0` — 0이면 제한 없음, 양수면 판정 프롬프트의
+  청크 content를 해당 길이로 자르고 `…(생략)`을 붙입니다.
 
 ### 4.6 LoRA 학습데이터 export
 
