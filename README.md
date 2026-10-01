@@ -117,8 +117,8 @@ sequenceDiagram
 | 용도 | 환경변수 | 현재 기본값 | 선정 근거 |
 | :--- | :--- | :--- | :--- |
 | 메인 답변 생성 | `MAIN_MODEL` | `claude-sonnet-4-6` | 긴 컨텍스트 종합, 페르소나 문체 변환, 멀티턴 추론 품질이 필요해 가장 무거운 모델 배정 |
-| 멀티턴 쿼리 재구성 (turn 2+) | `REWRITE_MODEL` | `claude-sonnet-4-6` (권장: `gemini-3.5-flash`) | 검색어 다듬기 수준의 낮은 난이도 태스크 — 경량 모델 전환 시 비용 5~10배 절감 가능 |
-| 그라운딩 이진 판정 | `GROUNDING_MODEL` | `gemini-3.5-flash-lite` | `{is_groundable, confidence}` 2필드 구조화 출력(max_tokens=64)만 필요해 가장 저비용 티어로 배정 |
+| 멀티턴 쿼리 재구성 (turn 2+) | `REWRITE_MODEL` | `claude-haiku-4-5-20251001` | 검색어 다듬기 수준의 낮은 난이도 태스크 — 경량 모델 전환 시 비용 5~10배 절감 가능 |
+| 그라운딩 이진 판정 | `GROUNDING_MODEL` | `gemini-2.5-flash-lite` | `{is_groundable, confidence}` 2필드 구조화 출력(max_tokens=64)만 필요해 가장 저비용 티어로 배정 |
 | 임베딩 생성 | `EMBEDDING_MODEL` | `gemini-embedding-2` | GMS 내 배치(최대 100건/요청) 지원, 별도 계약 없이 비용 효율적 |
 
 모델 교체/비용 튜닝은 `.env` 값만 변경하면 되며 `provider.py` 코드 변경은 필요하지 않습니다. **태스크 난이도에 비례해 모델 등급을 배정하는 "모델 계층화"** 원칙을 따릅니다 — 메인 답변에만 고성능 모델을 쓰고, 분류/재구성처럼 짧고 결정적인 태스크는 경량 모델로 내려 비용과 지연시간을 함께 줄입니다. 상세 비교/호출 스펙(엔드포인트, 인증 헤더, 응답 형식)은 [`docs/ai-api-usage.md`](docs/ai-api-usage.md) 참고.
@@ -272,7 +272,7 @@ data: {
   "token_usage": {
     "main": {"model": "claude-sonnet-4-6", "prompt_tokens": 1024, "completion_tokens": 156},
     "rewrite": null,
-    "grounding": {"model": "gemini-3.5-flash-lite", "prompt_tokens": 100, "completion_tokens": 10},
+    "grounding": {"model": "gemini-2.5-flash-lite", "prompt_tokens": 100, "completion_tokens": 10},
     "context_truncated": false
   }
 }

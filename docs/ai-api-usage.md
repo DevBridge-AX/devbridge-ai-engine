@@ -53,7 +53,7 @@ DevBridge AI Engine은 사내 프로젝트 이해 지원 챗봇의 AI 백엔드�
 |---|---|
 | 용도 | turn 2+ 대화에서 생략된 맥락을 복원하여 독립적 검색 쿼리로 변환 |
 | 환경변수 | `REWRITE_MODEL` |
-| 현재 모델 | `claude-sonnet-4-6` (권장: `gemini-3.5-flash`) |
+| 현재 모델 | `claude-haiku-4-5-20251001` (근거: `docs/rewrite-model-eval.md`) |
 | 호출 함수 | `provider.call_rewrite()` |
 | 호출 시점 | `conversation_history`가 있는 turn 2+ 질문 시 |
 | max_tokens | 512 |
@@ -67,7 +67,7 @@ DevBridge AI Engine은 사내 프로젝트 이해 지원 챗봇의 AI 백엔드�
 
 turn 1에서는 호출하지 않습니다 (원본 쿼리 그대로 사용).
 
-> **최적화 참고**: 쿼리 재구성은 추론 난이도가 낮아 경량 모델(`gemini-3.5-flash`)로 충분합니다. 비용 5~10배 절감, 지연시간 감소 효과.
+> **최적화 참고**: 쿼리 재구성은 추론 난이도가 낮아 경량 모델(`claude-haiku-4-5-20251001`)로 충분합니다. 비용 5~10배 절감, 지연시간 감소 효과.
 
 ---
 
@@ -218,7 +218,7 @@ LLM 호출 자체는 성공했지만 `summary`가 빈 문자열인 경우는 기
 
 사용자 질문 (turn 2+)
   │
-  ├─ [쿼리 재구성] call_rewrite()        ← gemini-3.5-flash (권장)
+  ├─ [쿼리 재구성] call_rewrite()        ← claude-haiku-4-5-20251001
   │
   └─ 이후 turn 1과 동일
 ```
@@ -241,7 +241,7 @@ LLM 호출 자체는 성공했지만 `summary`가 빈 문자열인 경우는 기
 GMS_API_KEY=                          # GMS 통합 API Key (필수)
 
 MAIN_MODEL=claude-sonnet-4-6          # 메인 답변 생성
-REWRITE_MODEL=gemini-3.5-flash        # 멀티턴 쿼리 재구성 (권장)
+REWRITE_MODEL=claude-haiku-4-5-20251001 # 멀티턴 쿼리 재구성
 GROUNDING_MODEL=gemini-2.5-flash-lite # 그라운딩 판정 (thinking 모델은 max_tokens=64에서 truncate되어 사용 불가)
 EMBEDDING_MODEL=gemini-embedding-2    # 임베딩 생성
 
@@ -259,8 +259,8 @@ DOCUMENT_ANALYSIS_MODEL=fallback-v1   # 문서 분석 표시용 모델명
 {
   "token_usage": {
     "main":      {"model": "claude-sonnet-4-6",  "prompt_tokens": 512, "completion_tokens": 128},
-    "rewrite":   {"model": "gemini-3.5-flash",   "prompt_tokens": 80,  "completion_tokens": 20},
-    "grounding": {"model": "gemini-3.5-flash",   "prompt_tokens": 100, "completion_tokens": 10}
+    "rewrite":   {"model": "claude-haiku-4-5-20251001", "prompt_tokens": 80,  "completion_tokens": 20},
+    "grounding": {"model": "gemini-2.5-flash-lite", "prompt_tokens": 100, "completion_tokens": 10}
   }
 }
 ```

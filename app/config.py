@@ -53,7 +53,8 @@ class Settings(BaseSettings):
 
     # LLM provider
     main_model: str = "claude-sonnet-4-6"
-    rewrite_model: str = "claude-sonnet-4-6"
+    # 기본값 근거: docs/rewrite-model-eval.md (A5 평가, 품질 동률·지연 약 2.1배 단축)
+    rewrite_model: str = "claude-haiku-4-5-20251001"
     grounding_model: str = "gemini-2.5-flash-lite"
 
     # 메인 답변 생성 스트리밍 호출의 max_tokens (chat_pipeline.run() → call_main_stream()).
