@@ -60,7 +60,8 @@ _DEFAULT_CACHE_DIR = _REPO_ROOT / "data" / "eval"
 SWEEP_THRESHOLDS = [round(0.20 + 0.05 * i, 2) for i in range(9)]
 
 # 판정 변형(G1): 프롬프트 버전 / 판정에 넣는 청크 수 / 청크 길이 상한(0=제한 없음).
-# 기본 설정(app/config.py)은 변경하지 않으며 이 표는 비교 실험 전용입니다.
+# baseline은 W1 이전 기본값(v1 / 5)을 명시적으로 고정한 것이며(현재 기본값은 strict_top3와 동일),
+# 이 표는 app/config.py 기본값과 무관한 비교 실험 전용입니다.
 VARIANTS: dict[str, dict] = {
     "baseline": {"prompt_version": "v1", "top_k": 5, "max_chunk_chars": 0},
     "strict": {"prompt_version": "v2-strict", "top_k": 5, "max_chunk_chars": 0},

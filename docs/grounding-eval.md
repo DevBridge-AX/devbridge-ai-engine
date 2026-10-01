@@ -162,9 +162,10 @@ final = (top_similarity >= threshold) AND effective_llm_is_groundable
 ## 2회차: 판정 변형 비교 (G1)
 
 1회차 권고(판정 프롬프트 강화, 컨텍스트 축소)를 같은 40건 데이터셋에서 비교하기 위한
-도구입니다. **기본 설정은 변경되지 않았으며(`grounding_prompt_version=v1`,
-`grounding_judge_top_k=5`, `grounding_judge_max_chunk_chars=0`), 운영 기본값 전환은 결과
-검토 후 별도 승인이 필요합니다.**
+도구입니다. **이 도구 도입 시점의 기본 설정은 `grounding_prompt_version=v1`,
+`grounding_judge_top_k=5`, `grounding_judge_max_chunk_chars=0`이었으며, 결과 검토 후 승인되어
+2026-10-02(W1)에 코드 기본값이 `v2-strict` / `3`(`max_chunk_chars=0` 유지)으로 변경되었습니다.
+`GROUNDING_PROMPT_VERSION=v1`, `GROUNDING_JUDGE_TOP_K=5`로 이전 동작을 복원할 수 있습니다.**
 
 ### 변형 정의 (`scripts/eval/grounding_eval.py::VARIANTS`)
 
@@ -258,6 +259,6 @@ python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-{timesta
 ### 권고
 
 - 기본값을 `grounding_prompt_version="v2-strict"`, `grounding_judge_top_k=3`(strict_top3)으로 변경하는 것을 **제안**한다.
-- **이 PR은 도구·변형 추가만 포함하며, 코드 기본값 변경은 승인 전까지 하지 않는다.**
+- **(당시) 이 PR은 도구·변형 추가만 포함하며, 코드 기본값 변경은 승인 전까지 하지 않는다.** -> 승인되어 2026-10-02(W1)에 기본값을 `v2-strict` / `top_k=3`으로 적용했다.
 - 승인 시 코드 변경 전에 `.env`로 먼저 적용해 확인할 수 있다: `GROUNDING_PROMPT_VERSION=v2-strict`, `GROUNDING_JUDGE_TOP_K=3`.
 - 위 결론은 실험 환경(코퍼스 4문서, 40건) 기준이므로, 실제 워크스페이스 데이터에서의 재검증이 필요하다.
