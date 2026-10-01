@@ -206,4 +206,58 @@ python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-{timesta
 
 ### 결과
 
-미실행
+모든 수치는 **실험 환경(코퍼스 4문서, 40건) 기준**입니다.
+
+#### 실행 조건
+
+- 실행일: 2026-10-01
+- 판정 모델: `gemini-2.5-flash-lite` (`max_tokens=64`), 임베딩: `gemini-embedding-2`
+- 코퍼스: `tests/live/fixtures/corpus` 4문서를 tmp 워크스페이스에 시드
+- 데이터셋: `scripts/eval/datasets/grounding_cases.jsonl` 40건 (not-groundable 12건, groundable 28건)
+- 검색은 케이스당 `top_k=5` 1회, 이후 변형별로 판정 호출 (총 200건 = 40케이스 x 5변형)
+- 유사도 임계치 0.35
+- 캐시: `data/eval/grounding-20261001-111520.jsonl` (`data/`는 `.gitignore` 대상)
+
+#### 변형 비교 (threshold 0.35)
+
+| variant | accuracy | not-gr precision | not-gr recall | not-gr F1 | groundable 오차단 | 평균 prompt_tokens | 평균 latency_ms | 파싱 실패율 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| baseline | 80.0% | 83.3% | 41.7% | 55.6% | 1/28 (3.6%) | 1990.7 | 813.7 | 7.5% |
+| strict | 90.0% | 90.0% | 75.0% | 81.8% | 1/28 (3.6%) | 2263.6 | 791.7 | 10.0% |
+| top3 | 82.5% | 85.7% | 50.0% | 63.2% | 1/28 (3.6%) | 1640.6 | 826.9 | 5.0% |
+| strict_top3 | 92.5% | 90.9% | 83.3% | 87.0% | 1/28 (3.6%) | 1914.0 | 840.2 | 2.5% |
+| strict_top3_cap | 87.5% | 81.8% | 75.0% | 78.3% | 2/28 (7.1%) | 1834.1 | 804.0 | 10.0% |
+
+#### variant 간 판정이 갈린 케이스 (✓ 정답 / ✗ 오답)
+
+| id | category | expected | baseline | strict | top3 | strict_top3 | strict_top3_cap |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| t008 | general_tech | groundable | ✓ | ✓ | ✗ | ✓ | ✓ |
+| p005 | project_answerable | groundable | ✓ | ✓ | ✓ | ✓ | ✗ |
+| u001 | project_unanswerable | not-groundable | ✗ | ✓ | ✓ | ✓ | ✓ |
+| u002 | project_unanswerable | not-groundable | ✓ | ✗ | ✓ | ✓ | ✓ |
+| u003 | project_unanswerable | not-groundable | ✓ | ✓ | ✓ | ✗ | ✗ |
+| u004 | project_unanswerable | not-groundable | ✗ | ✓ | ✗ | ✓ | ✓ |
+| u007 | project_unanswerable | not-groundable | ✗ | ✓ | ✗ | ✓ | ✓ |
+| u008 | project_unanswerable | not-groundable | ✗ | ✗ | ✗ | ✓ | ✗ |
+| a002 | ambiguous | groundable | ✗ | ✗ | ✓ | ✗ | ✗ |
+| a003 | ambiguous | not-groundable | ✗ | ✓ | ✗ | ✗ | ✓ |
+| a004 | ambiguous | not-groundable | ✓ | ✗ | ✗ | ✓ | ✓ |
+| a005 | ambiguous | not-groundable | ✗ | ✓ | ✗ | ✓ | ✗ |
+| a008 | ambiguous | not-groundable | ✗ | ✓ | ✓ | ✓ | ✓ |
+
+### 해석
+
+1. **strict 프롬프트가 not-groundable recall을 크게 올림**: baseline 41.7%에서 strict 75.0%, 여기에 top-3 축소를 더한 strict_top3는 83.3%(accuracy 92.5%, F1 87.0%)이며 파싱 실패율도 2.5%로 가장 낮다.
+2. **groundable 오차단은 baseline과 동일**: baseline, strict, top3, strict_top3 모두 1/28(3.6%)로, 채택 기준(오차단 악화 5%p 이내)을 충족한다.
+3. **입력 토큰**: strict는 프롬프트가 길어져 baseline 대비 약 +14%(1990.7 -> 2263.6)이나, strict_top3는 청크 수 축소로 baseline 대비 약 -4%(1990.7 -> 1914.0)로 상쇄된다. 지연은 변형 간 큰 차이가 없다(792~840ms).
+4. **청크 600자 상한(strict_top3_cap)은 채택 불가**: 오차단이 2/28(7.1%)로 늘고 파싱 실패율이 10.0%이며 recall/accuracy도 strict_top3보다 낮다.
+5. **주의 - 표본과 비결정성**: 이번 baseline(accuracy 80%, not-gr recall 41.7%)은 1회차(85%, 50%)와 다르다. not-groundable이 12건뿐이라 1건 차이가 8.3%p이고, `gemini-2.5-flash-lite`의 응답이 비결정적이기 때문으로 보인다. 변형 간 격차도 이 소표본 한계 안에서 해석해야 하며, 케이스별로는 변형 사이에서 정답이 엇갈리는 경우(위 표 13건)가 있다.
+6. **파싱 실패는 모두 fail-open**: 파싱 실패/호출 오류는 운영(`assess()`)에서 `is_groundable=True`로 처리된다. 따라서 파싱 실패율이 높은 변형(strict 10.0%, strict_top3_cap 10.0%)은 not-groundable 케이스를 놓칠 위험이 있고, strict_top3의 낮은 파싱 실패율(2.5%)은 그 위험이 적다는 뜻이다.
+
+### 권고
+
+- 기본값을 `grounding_prompt_version="v2-strict"`, `grounding_judge_top_k=3`(strict_top3)으로 변경하는 것을 **제안**한다.
+- **이 PR은 도구·변형 추가만 포함하며, 코드 기본값 변경은 승인 전까지 하지 않는다.**
+- 승인 시 코드 변경 전에 `.env`로 먼저 적용해 확인할 수 있다: `GROUNDING_PROMPT_VERSION=v2-strict`, `GROUNDING_JUDGE_TOP_K=3`.
+- 위 결론은 실험 환경(코퍼스 4문서, 40건) 기준이므로, 실제 워크스페이스 데이터에서의 재검증이 필요하다.
