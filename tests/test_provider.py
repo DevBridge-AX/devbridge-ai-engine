@@ -107,6 +107,26 @@ class TestCallGroundingNormal:
         assert schema["properties"]["is_groundable"] == {"type": "BOOLEAN"}
         assert schema["properties"]["confidence"] == {"type": "NUMBER"}
 
+    async def test_custom_system_prompt_is_sent(self, mock_gemini):
+        captured = mock_gemini(lambda req: httpx.Response(
+            200, json=_gemini_response('{"is_groundable": true, "confidence": 0.5}')
+        ))
+
+        await call_grounding("판정 입력", system_prompt="X")
+
+        body = json.loads(captured[0].content)
+        assert body["contents"][0]["parts"][0]["text"] == "X"
+
+    async def test_default_system_prompt_is_v1(self, mock_gemini):
+        captured = mock_gemini(lambda req: httpx.Response(
+            200, json=_gemini_response('{"is_groundable": true, "confidence": 0.5}')
+        ))
+
+        await call_grounding("판정 입력")
+
+        body = json.loads(captured[0].content)
+        assert body["contents"][0]["parts"][0]["text"] == provider._GROUNDING_SYSTEM_PROMPT
+
     async def test_strips_markdown_code_fence(self, mock_gemini):
         fenced = '```json\n{"is_groundable": true, "confidence": 0.5}\n```'
         mock_gemini(lambda req: httpx.Response(200, json=_gemini_response(fenced)))

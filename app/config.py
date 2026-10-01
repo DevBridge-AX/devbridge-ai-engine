@@ -6,7 +6,9 @@
 """
 
 from functools import lru_cache
+from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -77,6 +79,14 @@ class Settings(BaseSettings):
 
     # 그라운딩 유사도 1차 필터 임계치
     grounding_similarity_threshold: float = 0.35
+
+    # 그라운딩 2차 판정 시스템 프롬프트 버전 (app/core/rag/grounding_prompts.py의 키)
+    # 오타 시 기동 단계에서 실패하도록 Literal로 제한 (키 목록은 GROUNDING_PROMPTS와 동기화)
+    grounding_prompt_version: Literal["v1", "v2-strict"] = "v1"
+    # 2차 판정 프롬프트에 넣는 청크 수 (retrieve top_k와 별개, 앞에서부터 사용, 1 이상)
+    grounding_judge_top_k: int = Field(5, ge=1)
+    # 0이면 제한 없음. 양수면 판정 프롬프트의 청크 content를 이 길이로 자름
+    grounding_judge_max_chunk_chars: int = Field(0, ge=0)
 
     # BM25 하이브리드 검색
     bm25_enabled: bool = True
