@@ -5,6 +5,8 @@ scripts/eval/grounding_eval.py::compute_metrics 단위 테스트.
 scripts/eval/grounding_eval.py 모듈 docstring 및 --live 수집 로직과 동일합니다.
 """
 
+import pytest
+
 from scripts.eval.grounding_eval import (
     VARIANTS,
     compute_metrics,
@@ -356,6 +358,17 @@ def test_render_report_single_variant_is_plain_sweep():
     text = render_report([_record(id="a")], threshold=0.35)
     assert "임계치 스윕" in text
     assert "변형 비교" not in text
+
+
+def test_main_rejects_unknown_variant_via_argparse(capsys):
+    from scripts.eval.grounding_eval import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["--live", "--variants", "baseline,nope"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "nope" in err
+    assert "strict_top3" in err  # 유효한 키 안내
 
 
 def test_render_report_multi_variant_includes_both():

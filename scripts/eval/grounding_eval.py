@@ -657,6 +657,11 @@ def main(argv: list[str] | None = None) -> int:
         print(render_report(records, args.threshold))
         return 0
 
+    variant_names = [v.strip() for v in args.variants.split(",") if v.strip()] if args.variants else None
+    unknown = [v for v in (variant_names or []) if v not in VARIANTS]
+    if unknown:
+        parser.error(f"알 수 없는 variant: {', '.join(unknown)} (사용 가능: {', '.join(VARIANTS)})")
+
     if args.live:
         if not _live_enabled():
             print(
@@ -666,10 +671,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        variant_names = [v.strip() for v in args.variants.split(",") if v.strip()] if args.variants else None
-        unknown = [v for v in (variant_names or []) if v not in VARIANTS]
-        if unknown:
-            parser.error(f"알 수 없는 variant: {', '.join(unknown)} (사용 가능: {', '.join(VARIANTS)})")
         records = asyncio.run(_collect_records(args.dataset, args.limit, variant_names))
 
         out_path = args.out
