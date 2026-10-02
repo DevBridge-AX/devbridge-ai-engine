@@ -450,3 +450,82 @@ def render_verify_markdown(
             "- outcome: " + ", ".join(f"{k} {v}" for k, v in sorted(stats["outcomes"].items())),
         ]
     return "\n".join(lines).rstrip() + "\n"
+
+
+# ---------------------------------------------------------------------------
+# 검증 프롬프트 버전별 비교 (3회차)
+# ---------------------------------------------------------------------------
+
+# 비교표에 표시할 후보 하한(hit_rate@candidate)
+COMPARE_CANDIDATES = [0.80, 0.85, 0.86]
+
+
+def parse_prompt_versions(value: str | None, default: str) -> list[str]:
+    """`--verify-prompt-version` 값("v2" 또는 "v1,v2")을 중복 없는 버전 목록으로 변환합니다.
+
+    값이 없으면 [default]. 빈 항목은 무시하고, 목록이 비면 ValueError.
+    """
+    if value is None:
+        return [default]
+    versions: list[str] = []
+    for part in value.split(","):
+        part = part.strip()
+        if part and part not in versions:
+            versions.append(part)
+    if not versions:
+        raise ValueError("검증 프롬프트 버전이 비어 있습니다.")
+    return versions
+
+
+def group_by_prompt_version(records: list[dict]) -> dict[str, list[dict]]:
+    """verify_prompt_version별로 레코드를 묶습니다(입력 순서 유지).
+
+    필드가 없는 구버전 레코드는 키 ""(빈 문자열)로 묶입니다.
+    """
+    groups: dict[str, list[dict]] = {}
+    for r in records:
+        groups.setdefault(r.get("verify_prompt_version") or "", []).append(r)
+    return groups
+
+
+def has_multiple_prompt_versions(records: list[dict]) -> bool:
+    """서로 다른 verify_prompt_version 값이 2개 이상이면 True(구버전 캐시/단일 버전은 False)."""
+    return len({r.get("verify_prompt_version") for r in records if r.get("verify_prompt_version")}) > 1
+
+
+def render_version_comparison(
+    groups: dict[str, list[dict]],
+    direct_threshold: float = DEFAULT_DIRECT_THRESHOLD,
+    candidates: list[float] | None = None,
+) -> str:
+    """버전별 검증기 단독 성능 + hit_rate@candidate + false_hit_rate 비교표(markdown)."""
+    cands = candidates if candidates is not None else COMPARE_CANDIDATES
+    head = ["version", "verifier accuracy", "false YES", "false NO"]
+    head += [f"hit_rate@{c:.2f}" for c in cands] + ["false_hit_rate"]
+    lines = [
+        "",
+        "## 검증 프롬프트 버전 비교",
+        "",
+        f"- 즉시 hit 임계치(direct): {direct_threshold:.2f}. false_hit_rate는 첫 후보 하한"
+        f"({cands[0]:.2f}) 기준(후보 하한이 낮을수록 검증 의존도가 커짐)",
+        "",
+        "| " + " | ".join(head) + " |",
+        "| " + " | ".join("---" for _ in head) + " |",
+    ]
+    for version, recs in groups.items():
+        stats = verify_stats(recs)
+        rows = verify_sweep(recs, cands, direct_threshold=direct_threshold)
+        label = version or "(미기록)"
+        if not stats.get("total"):
+            lines.append("| " + " | ".join([label] + ["-"] * (len(head) - 1)) + " |")
+            continue
+        cells = [
+            label,
+            _pct(stats["accuracy"]),
+            str(len(stats["false_yes_ids"])),
+            str(len(stats["false_no_ids"])),
+        ]
+        cells += [_pct(r["hit_rate"]) for r in rows]
+        cells.append(_pct(rows[0]["false_hit_rate"]))
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines).rstrip() + "\n"
