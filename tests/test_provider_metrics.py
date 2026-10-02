@@ -275,3 +275,28 @@ class TestPayloadHasNoPromptText:
         assert secret_system not in raw
         assert secret_user not in raw
         assert secret_response not in raw
+
+
+class TestCancelledErrorRecording:
+    """wait_for 타임아웃 등으로 취소된 호출이 성공(error_type=None)으로 기록되지 않아야 합니다."""
+
+    async def test_call_rewrite_cancelled_records_error_type(self, monkeypatch, metrics_tmp_dir):
+        import asyncio
+
+        async def slow_request(url, headers, body, timeout):
+            await asyncio.sleep(10)
+
+        monkeypatch.setattr(provider, "_request_once", slow_request)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                provider.call_rewrite(
+                    [{"role": "user", "content": "q"}], "sys", max_tokens=8, purpose="cache_verify"
+                ),
+                timeout=0.05,
+            )
+
+        records = _read_records(metrics_tmp_dir, "llm_calls")
+        assert len(records) == 1
+        assert records[0]["purpose"] == "cache_verify"
+        assert records[0]["error_type"] == "CancelledError"

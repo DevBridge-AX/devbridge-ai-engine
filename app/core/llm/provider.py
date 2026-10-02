@@ -19,6 +19,7 @@ provider 자동 감지:
 스트리밍(SSE)은 call_main_stream()의 Anthropic 포맷만 지원합니다.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -281,6 +282,10 @@ async def call_main(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
         )
+    except asyncio.CancelledError:
+        # 취소(예: wait_for 타임아웃)는 BaseException이라 아래 except에 안 잡힌다. 성공처럼 기록되지 않게 표시한다.
+        error_type = "CancelledError"
+        raise
     except Exception as exc:
         error_type = type(exc).__name__
         if isinstance(exc, httpx.HTTPStatusError):
@@ -356,6 +361,10 @@ async def call_main_stream(
             prompt_tokens=input_tokens,
             completion_tokens=output_tokens,
         )
+    except asyncio.CancelledError:
+        # 취소(예: wait_for 타임아웃)는 BaseException이라 아래 except에 안 잡힌다. 성공처럼 기록되지 않게 표시한다.
+        error_type = "CancelledError"
+        raise
     except Exception as exc:
         error_type = type(exc).__name__
         if isinstance(exc, httpx.HTTPStatusError):
@@ -416,6 +425,10 @@ async def call_rewrite(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
         )
+    except asyncio.CancelledError:
+        # 취소(예: wait_for 타임아웃)는 BaseException이라 아래 except에 안 잡힌다. 성공처럼 기록되지 않게 표시한다.
+        error_type = "CancelledError"
+        raise
     except Exception as exc:
         error_type = type(exc).__name__
         if isinstance(exc, httpx.HTTPStatusError):
@@ -534,6 +547,10 @@ async def call_grounding(
             logger.warning("call_grounding: JSON 파싱 실패. 응답: %r", text)
             parse_ok = False
             return {}, usage
+    except asyncio.CancelledError:
+        # 취소(예: wait_for 타임아웃)는 BaseException이라 아래 except에 안 잡힌다. 성공처럼 기록되지 않게 표시한다.
+        error_type = "CancelledError"
+        raise
     except Exception as exc:
         error_type = type(exc).__name__
         if isinstance(exc, httpx.HTTPStatusError):
@@ -605,6 +622,10 @@ async def call_structured(
         except json.JSONDecodeError:
             parse_ok = False
             raise
+    except asyncio.CancelledError:
+        # 취소(예: wait_for 타임아웃)는 BaseException이라 아래 except에 안 잡힌다. 성공처럼 기록되지 않게 표시한다.
+        error_type = "CancelledError"
+        raise
     except Exception as exc:
         error_type = type(exc).__name__
         if isinstance(exc, httpx.HTTPStatusError):

@@ -181,10 +181,23 @@ def compute_cache_summary(records: list[dict]) -> dict[str, object] | None:
             return None
         return _percentile(values, 50), _percentile(values, 95)
 
+    # LLM 재검증(cache_verify_*) 지표. 구버전 레코드는 필드가 없으므로 None으로 취급합니다.
+    verified = [r for r in enabled if r.get("cache_verify_result") is not None]
+    verify_outcomes: dict[str, int] = {}
+    for r in verified:
+        outcome = str(r["cache_verify_result"])
+        verify_outcomes[outcome] = verify_outcomes.get(outcome, 0) + 1
+    verify_hit_count = sum(1 for r in hits if r.get("cache_verify_result") == "yes")
+
     return {
         "enabled_count": len(enabled),
         "hit_count": len(hits),
         "hit_rate": len(hits) / len(enabled) * 100,
+        "verify_count": len(verified),
+        "verify_outcomes": verify_outcomes,
+        "verify_latency": percentiles(verified, "cache_verify_ms"),
+        "verify_hit_count": verify_hit_count,
+        "verify_hit_share": (verify_hit_count / len(hits) * 100) if hits else 0.0,
         "latency": {
             (label, key): percentiles(group, key)
             for label, group in (("hit", hits), ("miss", misses))
@@ -239,6 +252,24 @@ def render_markdown(records_by_event: dict[str, list[dict]]) -> str:
                     f"- 시맨틱 캐시 hit율: {cache_summary['hit_rate']:.1f}% "
                     f"({cache_summary['hit_count']}/{cache_summary['enabled_count']})"
                 )
+                if cache_summary["verify_count"] == 0:
+                    lines.append("- 재검증: n/a")
+                else:
+                    outcomes = cache_summary["verify_outcomes"]
+                    outcome_text = " / ".join(
+                        f"{name} {outcomes.get(name, 0)}"
+                        for name in ("yes", "no", "invalid", "error", "timeout")
+                    )
+                    lines.append(f"- 재검증 호출: {cache_summary['verify_count']} ({outcome_text})")
+                    vlat = cache_summary["verify_latency"]
+                    if vlat is None:
+                        lines.append("- 재검증 지연: p50 - / p95 -")
+                    else:
+                        lines.append(f"- 재검증 지연: p50 {vlat[0]:.1f}ms / p95 {vlat[1]:.1f}ms")
+                    lines.append(
+                        f"- 재검증 경유 hit 비율: {cache_summary['verify_hit_share']:.1f}% "
+                        f"({cache_summary['verify_hit_count']}/{cache_summary['hit_count']})"
+                    )
                 lines.append("")
                 lines.append("| 구분 | 지표 | p50(ms) | p95(ms) |")
                 lines.append("| --- | --- | --- | --- |")

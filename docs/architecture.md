@@ -316,7 +316,10 @@ turn 1/2+ : rewritten_query ─► embed ─► cache.lookup ─┬─ hit  ─�
   `rewrite` 사용량은 실제 값을 그대로 담습니다.
 - **관측성**: `chat_metrics`에 `cache_enabled`, `cache_hit`, `cache_similarity`,
   `cache_lookup_ms`가 기록되며 hit 시 `grounding_stage="cache"`입니다.
-  `scripts/metrics_report.py`가 hit율과 hit/miss별 `total_ms`·`ttft_ms` p50/p95를 보여줍니다.
+  LLM 재검증이 켜져 있으면 `cache_verify_ms`(재검증 호출 지연)와 `cache_verify_result`
+  (`yes`/`no`/`invalid`/`error`/`timeout`)도 hit·miss 양쪽 레코드에 기록되며, 재검증을
+  호출하지 않은 요청은 둘 다 `null`입니다.
+  `scripts/metrics_report.py`가 hit율, hit/miss별 `total_ms`·`ttft_ms` p50/p95, 재검증 결과 분포·지연·재검증 경유 hit 비율을 보여줍니다.
 - **멀티 워커 제한**: 프로세스 메모리 캐시이므로 워커마다 독립이며 인덱싱 무효화가 다른
   워커에는 전파되지 않습니다. 멀티 워커 운영 시 TTL이 stale 허용 상한이 됩니다.
 - **stale 저장 방지(generation)**: `SemanticCache`는 워크스페이스별 generation 카운터를

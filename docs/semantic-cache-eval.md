@@ -245,6 +245,9 @@ python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.json
 
 - 검증 호출 토큰은 `done.token_usage`에 포함되지 않는다(응답 계약 불변). `llm_calls`의
   `purpose="cache_verify"` 이벤트로만 확인 가능하며, 과금 집계 반영은 Spring과 협의할 항목이다.
+- 재검증 타임아웃으로 취소된 호출은 `llm_calls`에 `error_type="CancelledError"`로 기록된다
+  (이전에는 `error_type=null`·토큰 0의 성공 호출처럼 보였다). `chat_metrics`에는
+  `cache_verify_ms`/`cache_verify_result`가 남는다.
 
 ## 후속 선택지
 
