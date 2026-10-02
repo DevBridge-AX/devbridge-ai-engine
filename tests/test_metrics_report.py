@@ -216,3 +216,48 @@ class TestRenderMarkdownAndCli:
         missing = tmp_path / "does-not-exist"
         exit_code = metrics_report.main([str(missing)])
         assert exit_code == 1
+
+
+class TestCacheVerifySummary:
+
+    def _records(self):
+        return [
+            {"cache_enabled": True, "cache_hit": True, "cache_verify_result": "yes", "cache_verify_ms": 100.0},
+            {"cache_enabled": True, "cache_hit": True, "cache_verify_result": None, "cache_verify_ms": None},
+            {"cache_enabled": True, "cache_hit": False, "cache_verify_result": "no", "cache_verify_ms": 300.0},
+            {"cache_enabled": True, "cache_hit": False, "cache_verify_result": "timeout", "cache_verify_ms": 500.0},
+            {"cache_enabled": True, "cache_hit": False},
+        ]
+
+    def test_summary_keys(self):
+        summary = metrics_report.compute_cache_summary(self._records())
+
+        assert summary["verify_count"] == 3
+        assert summary["verify_outcomes"] == {"yes": 1, "no": 1, "timeout": 1}
+        assert summary["verify_latency"] == (300.0, 480.0)
+        assert summary["verify_hit_count"] == 1
+        assert summary["verify_hit_share"] == 50.0
+
+    def test_render_lines(self):
+        markdown = metrics_report.render_markdown({"chat_metrics": self._records()})
+
+        assert "재검증 호출: 3 (yes 1 / no 1 / invalid 0 / error 0 / timeout 1)" in markdown
+        assert "재검증 지연: p50 300.0ms / p95 480.0ms" in markdown
+        assert "재검증 경유 hit 비율: 50.0% (1/2)" in markdown
+
+    def test_zero_verify_records(self):
+        records = [{"cache_enabled": True, "cache_hit": True}, {"cache_enabled": True, "cache_hit": False}]
+        summary = metrics_report.compute_cache_summary(records)
+
+        assert summary["verify_count"] == 0
+        assert summary["verify_outcomes"] == {}
+        assert summary["verify_latency"] is None
+        assert summary["verify_hit_share"] == 0.0
+        markdown = metrics_report.render_markdown({"chat_metrics": records})
+        assert "재검증: n/a" in markdown
+        assert "재검증 호출" not in markdown
+
+    def test_no_hits_share_is_zero(self):
+        records = [{"cache_enabled": True, "cache_hit": False, "cache_verify_result": "no", "cache_verify_ms": 1.0}]
+        summary = metrics_report.compute_cache_summary(records)
+        assert summary["verify_hit_share"] == 0.0
