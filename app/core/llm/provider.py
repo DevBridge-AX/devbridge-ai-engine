@@ -383,10 +383,12 @@ async def call_rewrite(
     messages: list[dict],
     system_prompt: str = "",
     max_tokens: int = 512,
+    purpose: str = "rewrite",
 ) -> tuple[str, LLMUsage]:
     """REWRITE_MODEL로 멀티턴 쿼리를 재구성합니다. query_rewriter.py에서 호출됩니다.
 
     provider-prefix에 무관하게 동작합니다 (claude-*/gpt-*/gemini-* 모두 가능).
+    purpose는 llm_calls 이벤트의 purpose 값입니다(경량 모델을 쓰는 다른 호출, 예: 캐시 재검증용).
     """
     settings = get_settings()
     provider = _detect_provider(settings.rewrite_model)
@@ -421,7 +423,7 @@ async def call_rewrite(
         raise
     finally:
         _record_llm_call(
-            purpose="rewrite",
+            purpose=purpose,
             model=settings.rewrite_model,
             provider=provider,
             latency_ms=(time.perf_counter() - start) * 1000,

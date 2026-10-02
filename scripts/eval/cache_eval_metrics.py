@@ -22,6 +22,13 @@ VALID_KINDS = (KIND_SAME, KIND_DIFFERENT)
 # 오프라인 스윕 임계치: 0.85 ~ 0.99, 0.01 간격 (부동소수 오차 방지를 위해 정수 스텝으로 계산)
 SWEEP_THRESHOLDS = [round(0.85 + 0.01 * i, 2) for i in range(15)]
 
+# LLM 재검증(verify) 평가: 후보 하한 스윕값과 즉시 hit 임계치(운영 기본 semantic_cache_threshold)
+VERIFY_CANDIDATE_THRESHOLDS = [0.80, 0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.90]
+DEFAULT_DIRECT_THRESHOLD = 0.95
+# 채택 기준: false_hit_rate <= 2% AND hit_rate >= 50%
+ADOPT_MAX_FALSE_HIT_RATE = 0.02
+ADOPT_MIN_HIT_RATE = 0.50
+
 _REQUIRED_FIELDS = ("id", "kind", "q1", "q2")
 
 
@@ -282,3 +289,164 @@ def _boundary_table(rows: list[dict]) -> list[str]:
     for r in rows:
         lines.append(f"| {r['id']} | {float(r['similarity']):.4f} | {r['q1']} | {r['q2']} |")
     return lines
+
+
+# ---------------------------------------------------------------------------
+# LLM 재검증(verify) 평가 — verify_* 필드가 있는 캐시 레코드에서만 의미가 있음
+# ---------------------------------------------------------------------------
+
+def has_verify_fields(records: list[dict]) -> bool:
+    """레코드 중 하나라도 verify 결과(verify_same)를 가지면 True. 구버전 캐시는 False."""
+    return any(r.get("verify_same") is not None for r in records)
+
+
+def verify_sweep(
+    records: list[dict],
+    candidate_thresholds: list[float] | None = None,
+    direct_threshold: float = DEFAULT_DIRECT_THRESHOLD,
+) -> list[dict]:
+    """후보 하한(candidate_threshold)별 "임계치 + 재검증" hit 품질을 계산합니다.
+
+    hit 판정(파이프라인과 동일):
+    - similarity >= direct_threshold: 검증 없이 hit
+    - candidate_threshold <= similarity < direct_threshold: verify_same이 True일 때만 hit
+    - 그 미만: miss
+    verify_same이 없는 레코드는 후보 구간에서 miss로 취급합니다.
+    verify_calls: 후보 구간에 들어가 검증이 필요한 쌍 수(= 실제 운영에서 발생할 LLM 호출 수).
+    adopt: false_hit_rate <= 2% AND hit_rate >= 50%.
+    """
+    thresholds = candidate_thresholds if candidate_thresholds is not None else VERIFY_CANDIDATE_THRESHOLDS
+    same = [r for r in records if r["kind"] == KIND_SAME]
+    diff = [r for r in records if r["kind"] == KIND_DIFFERENT]
+
+    def _hit(record: dict, candidate: float) -> tuple[bool, bool]:
+        """(hit 여부, 검증 호출 필요 여부)"""
+        sim = float(record["similarity"])
+        if sim >= direct_threshold:
+            return True, False
+        if sim >= candidate:
+            return bool(record.get("verify_same")), True
+        return False, False
+
+    rows = []
+    for t in thresholds:
+        same_res = [_hit(r, t) for r in same]
+        diff_res = [_hit(r, t) for r in diff]
+        same_hits = sum(1 for hit, _ in same_res if hit)
+        diff_hits = sum(1 for hit, _ in diff_res if hit)
+        hit_rate = same_hits / len(same) if same else None
+        false_hit_rate = diff_hits / len(diff) if diff else None
+        adopt = (
+            hit_rate is not None
+            and false_hit_rate is not None
+            and false_hit_rate <= ADOPT_MAX_FALSE_HIT_RATE
+            and hit_rate >= ADOPT_MIN_HIT_RATE
+        )
+        rows.append(
+            {
+                "candidate_threshold": t,
+                "direct_threshold": direct_threshold,
+                "hit_rate": hit_rate,
+                "false_hit_rate": false_hit_rate,
+                "same_hits": same_hits,
+                "same_total": len(same),
+                "diff_hits": diff_hits,
+                "diff_total": len(diff),
+                "verify_calls": sum(1 for _, v in same_res + diff_res if v),
+                "verify_calls_same": sum(1 for _, v in same_res if v),
+                "verify_calls_diff": sum(1 for _, v in diff_res if v),
+                "adopt": adopt,
+            }
+        )
+    return rows
+
+
+def verify_stats(records: list[dict]) -> dict:
+    """검증기 단독 성능을 계산합니다(유사도와 무관하게 verify 결과가 있는 모든 쌍 대상).
+
+    - accuracy: same_intent는 verify_same=True, different_intent는 False면 정답
+    - misjudged_ids: 오판 쌍 id (false_yes: 다른 질문을 YES / false_no: 같은 질문을 NO)
+    - latency p50/p95(ms), 호출당 평균 prompt/completion 토큰, outcome별 건수
+    """
+    verified = [r for r in records if r.get("verify_same") is not None]
+    if not verified:
+        return {"total": 0}
+
+    false_yes = [r["id"] for r in verified if r["kind"] == KIND_DIFFERENT and r["verify_same"]]
+    false_no = [r["id"] for r in verified if r["kind"] == KIND_SAME and not r["verify_same"]]
+    latencies = [float(r["verify_latency_ms"]) for r in verified if r.get("verify_latency_ms") is not None]
+    prompt_tokens = [r["verify_prompt_tokens"] for r in verified if r.get("verify_prompt_tokens") is not None]
+    completion_tokens = [
+        r["verify_completion_tokens"] for r in verified if r.get("verify_completion_tokens") is not None
+    ]
+    outcomes: dict[str, int] = {}
+    for r in verified:
+        key = r.get("verify_outcome") or "-"
+        outcomes[key] = outcomes.get(key, 0) + 1
+
+    total = len(verified)
+    return {
+        "total": total,
+        "accuracy": (total - len(false_yes) - len(false_no)) / total,
+        "false_yes_ids": false_yes,
+        "false_no_ids": false_no,
+        "misjudged_ids": false_yes + false_no,
+        "latency_p50_ms": _percentile(latencies, 50) if latencies else None,
+        "latency_p95_ms": _percentile(latencies, 95) if latencies else None,
+        "avg_prompt_tokens": sum(prompt_tokens) / len(prompt_tokens) if prompt_tokens else None,
+        "avg_completion_tokens": sum(completion_tokens) / len(completion_tokens) if completion_tokens else None,
+        "outcomes": outcomes,
+        "models": sorted({r["verify_model"] for r in verified if r.get("verify_model")}),
+        "prompt_versions": sorted({r["verify_prompt_version"] for r in verified if r.get("verify_prompt_version")}),
+    }
+
+
+def _num(value: float | None, fmt: str = ".1f") -> str:
+    return "-" if value is None else format(value, fmt)
+
+
+def render_verify_markdown(
+    records: list[dict],
+    rows: list[dict],
+    stats: dict,
+    direct_threshold: float = DEFAULT_DIRECT_THRESHOLD,
+) -> str:
+    """LLM 재검증 스윕 결과를 markdown 섹션으로 렌더링합니다(순수 함수)."""
+    lines = [
+        "",
+        "## LLM 재검증 스윕",
+        "",
+        f"- 즉시 hit 임계치(direct): {direct_threshold:.2f} (이상이면 검증 없이 hit)",
+        "- 후보 구간: candidate <= 유사도 < direct → 검증 YES일 때만 hit",
+        f"- 채택 기준: false_hit_rate <= {ADOPT_MAX_FALSE_HIT_RATE * 100:.0f}% AND "
+        f"hit_rate >= {ADOPT_MIN_HIT_RATE * 100:.0f}%",
+        f"- 검증 모델: {', '.join(stats.get('models', [])) or '-'} / "
+        f"프롬프트 버전: {', '.join(stats.get('prompt_versions', [])) or '-'}",
+        "",
+        "| candidate | hit_rate | false_hit_rate | hits/same | hits/diff | verify 호출(same/diff) | 채택 |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for r in rows:
+        lines.append(
+            f"| {r['candidate_threshold']:.2f} | {_pct(r['hit_rate'])} | {_pct(r['false_hit_rate'])} | "
+            f"{r['same_hits']}/{r['same_total']} | {r['diff_hits']}/{r['diff_total']} | "
+            f"{r['verify_calls']} ({r['verify_calls_same']}/{r['verify_calls_diff']}) | "
+            f"{'O' if r['adopt'] else '-'} |"
+        )
+
+    lines += ["", "### 검증기 단독 성능 (유사도 무관, 전 쌍)", ""]
+    if not stats.get("total"):
+        lines.append("- verify 결과 없음")
+    else:
+        lines += [
+            f"- 정확도: {_pct(stats['accuracy'])} ({stats['total']}쌍)",
+            f"- 오판 id: {', '.join(stats['misjudged_ids']) or '없음'} "
+            f"(false YES: {', '.join(stats['false_yes_ids']) or '없음'} / "
+            f"false NO: {', '.join(stats['false_no_ids']) or '없음'})",
+            f"- 지연 p50/p95: {_num(stats['latency_p50_ms'])} / {_num(stats['latency_p95_ms'])} ms "
+            "(hit 경로 지연 추정 = 기존 hit 경로 p50 + verify p50)",
+            f"- 호출당 평균 토큰: prompt {_num(stats['avg_prompt_tokens'])} / "
+            f"completion {_num(stats['avg_completion_tokens'])}",
+            "- outcome: " + ", ".join(f"{k} {v}" for k, v in sorted(stats["outcomes"].items())),
+        ]
+    return "\n".join(lines).rstrip() + "\n"

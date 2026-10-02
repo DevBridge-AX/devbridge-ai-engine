@@ -333,8 +333,28 @@ turn 1/2+ : rewritten_query ─► embed ─► cache.lookup ─┬─ hit  ─�
   - 플래그가 켜지면 `embed_ms`가 `retrieve_ms` 밖에서 측정되고, BM25 검색과 임베딩의
     병렬 실행이 사라집니다(임베딩을 먼저 기다림). 따라서 off 상태와 `retrieve_ms`를
     직접 비교할 수 없습니다.
+- **LLM 재검증(선택, 기본 off)**: 임베딩 유사도 분포가 압축되어 임계치만으로는 hit와 오적중을
+  가르기 어려우므로, `SEMANTIC_CACHE_VERIFY_ENABLED=true`이면 후보 구간을 경량 LLM으로 확인합니다.
+  - 유사도 ≥ `SEMANTIC_CACHE_THRESHOLD`: 기존처럼 검증 없이 즉시 hit.
+  - `SEMANTIC_CACHE_CANDIDATE_THRESHOLD` ≤ 유사도 < `SEMANTIC_CACHE_THRESHOLD`: 최선 후보 **1건만**
+    `app/core/cache/verifier.py`의 `verify_same_question`(REWRITE_MODEL, max_tokens 16, 타임아웃
+    `SEMANTIC_CACHE_VERIFY_TIMEOUT_SECONDS`)으로 검증하고, 정확히 `YES`일 때만 hit입니다
+    (비용 상한: 요청당 최대 1회). 접근 재검증을 먼저 하고 통과한 경우에만 검증을 호출합니다.
+  - `NO`/예외/타임아웃/해석 불가 응답은 모두 miss(fail-closed)로 일반 경로를 탑니다. 검증에 실패한
+    후보는 `hits`/LRU가 갱신되지 않습니다(`lookup(min_similarity=...)`은 후보 구간에서 부수효과가
+    없고, 검증 통과 시 `mark_hit`으로 확정).
+  - `CANDIDATE_THRESHOLD`가 `THRESHOLD`보다 크면 후보 구간이 없는 것으로 보고 재검증을 건너뜁니다
+    (기동 오류 없이 경고 로그만 남김).
+  - 관측: 검증 LLM 호출은 `llm_calls` 이벤트에 `purpose="cache_verify"`로 기록됩니다.
+    `chat_metrics`에는 아직 검증 전용 필드가 없습니다(별도 작업).
+  - **Spring 협의 항목**: 응답 계약은 변하지 않으므로 검증 호출의 토큰은 `done.token_usage`에
+    포함되지 않습니다(`rewrite`/`main`/`grounding`만 보고). 과금 집계에 포함하려면 `token_usage`
+    확장 여부를 Spring과 협의해야 합니다.
+  - 꺼져 있으면 동작·호출 횟수가 기존과 완전히 같습니다.
 - **설정**: `SEMANTIC_CACHE_ENABLED`(기본 false), `SEMANTIC_CACHE_THRESHOLD`(0.95),
-  `SEMANTIC_CACHE_TTL_SECONDS`(3600), `SEMANTIC_CACHE_MAX_ENTRIES`(500, 워크스페이스당).
+  `SEMANTIC_CACHE_TTL_SECONDS`(3600), `SEMANTIC_CACHE_MAX_ENTRIES`(500, 워크스페이스당),
+  `SEMANTIC_CACHE_VERIFY_ENABLED`(false), `SEMANTIC_CACHE_CANDIDATE_THRESHOLD`(0.86),
+  `SEMANTIC_CACHE_VERIFY_TIMEOUT_SECONDS`(3.0).
 
 ## 5. DB 마이그레이션 (Alembic)
 

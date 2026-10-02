@@ -173,6 +173,79 @@ role=developer, 단일 턴. 질문 8개(p001·p006·p008·p010·p011·p016·p017
   오프라인 스윕대로 임계치 0.95에서 5%(1/20)에 그친다. 동일 질문 반복(FAQ·재접속 재질문)에서만 효과를
   기대할 수 있다.
 
+## 2회차 (재검증)
+
+1회차에서 임베딩 유사도 분포가 압축되어(같은 의도 중앙값 0.835 / 다른 의도 0.822) 임계치만으로는
+hit와 오적중을 가르기 어렵다는 결론이 났다. 2회차는 후보 구간(candidate 하한 ≤ 유사도 < 0.95)의
+최선 후보 1건을 경량 LLM(REWRITE_MODEL)으로 재검증하는 방식(`SEMANTIC_CACHE_VERIFY_ENABLED`)의
+효과를 측정한다. 검증기 프롬프트에는 이 데이터셋의 문장을 예시로 넣지 않았다(평가 누수 방지).
+
+### 방법
+
+- `--collect --verify`: 임베딩 수집 후 **모든 쌍**에 `verify_same_question(q1, q2)`를 순차 호출해
+  레코드에 `verify_outcome/verify_same/verify_latency_ms/verify_prompt_tokens/
+  verify_completion_tokens/verify_model/verify_prompt_version`을 저장한다(쌍당 LLM 호출 1회).
+  모든 쌍을 검증해 두므로 후보 임계치는 오프라인에서 스윕한다.
+- 오프라인 판정(파이프라인과 동일): 유사도 ≥ direct(0.95) → 즉시 hit, candidate ≤ 유사도 < direct →
+  검증 YES일 때만 hit, 그 미만 → miss. candidate를 [0.80, 0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.90]로 스윕한다.
+- 채택 기준: false_hit_rate ≤ 2% **그리고** hit_rate ≥ 50%.
+- 지표: hit_rate, false_hit_rate, 후보별 검증 호출 수, 검증 지연 p50/p95, 호출당 평균 토큰,
+  검증기 단독 정확도와 오판 쌍 id. hit 경로 지연은 1회차 hit 경로 p50(약 604ms) + 검증 p50으로 추정한다.
+
+### 명령
+
+```bash
+# 수집 (실 임베딩 + 실 LLM 40회 호출, 비용 발생)
+RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify
+
+# 오프라인 리포트 (API 호출 없음)
+python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.jsonl --direct-threshold 0.95
+```
+
+### 결과 (2026-10-02, `data/eval/cache-20261002-004305.jsonl`)
+
+- 검증 모델 / 프롬프트 버전: `claude-haiku-4-5-20251001` / `v1`, 임베딩 `gemini-embedding-2`
+- 즉시 hit 임계치(direct) 0.95
+
+| candidate | hit_rate | false_hit_rate | hits(same/diff) | 검증 호출(same/diff) |
+| --- | --- | --- | --- | --- |
+| 0.80 | **40.0%** | 0.0% | 8/0 | 24 (11/13) |
+| 0.82 | 35.0% | 0.0% | 7/0 | 19 (9/10) |
+| 0.84 | 35.0% | 0.0% | 7/0 | 17 (9/8) |
+| 0.85 | 35.0% | 0.0% | 7/0 | 16 (9/7) |
+| 0.86 | 30.0% | 0.0% | 6/0 | 14 (7/7) |
+| 0.87 | 25.0% | 0.0% | 5/0 | 11 (5/6) |
+| 0.88 | 20.0% | 0.0% | 4/0 | 9 (4/5) |
+| 0.90 | 10.0% | 0.0% | 2/0 | 6 (1/5) |
+
+- 비교: 1회차 임계치 단독 0.95 → hit 5% / 오적중 0%, 0.85 → 50% / 35%
+- 검증기 단독(전 40쌍): 정확도 70.0%, **false YES 0건 / false NO 12건**
+  (p002, p003, p005, p006, p009, p010, p011, p012, p013, p014, p019, p020), outcome yes 8 / no 32 (invalid·오류 0)
+- 검증 지연 p50/p95: 694 / 877 ms → hit 경로 p50 추정 약 1.3s (기준 2s 이하 충족)
+- 호출당 평균 토큰: prompt 469 / completion 4 (hit 1건이 절감하는 토큰 약 4,881 대비 소량)
+
+### 결론
+
+- **채택 기준 미달**: 오적중 0%는 유지했으나 hit_rate 최대 40%(candidate 0.80)로 50%에 못 미친다.
+  기본값(`semantic_cache_enabled=false`, `semantic_cache_verify_enabled=false`, candidate 0.86)은 변경하지 않는다.
+- 원인 1 — **검증기 보수성**: 오판 12건이 모두 false NO. "애매하면 NO" 규칙 때문에 워크스페이스 문맥이
+  있어야 같다고 볼 수 있는 쌍(예: 특정 PG사명 ↔ "결제 게이트웨이", "몇 분 안에 대응" ↔ "SLA")을 거절한다.
+- 원인 2 — **임베딩 상한**: same_intent 20쌍 중 8쌍은 유사도 0.80 미만(최저 0.646)이라 후보에도 들지 못한다.
+  검증기가 완벽해도 hit_rate 상한은 candidate 0.85에서 50%, 0.80에서 60%다.
+- 켠다면 candidate 0.80 권고(이 데이터셋에서 오적중 0%로 hit 8배). 단, 다른 의도 20쌍 기준 오적중 2% 이하는
+  사실상 0건 요구이며 표본이 작아 운영 안전을 보장하지 않는다.
+
+### 후속 과제
+
+- 검증 프롬프트 v2: "애매하면 NO" 완화, 표기·용어 차이 허용. 같은 40쌍으로 튜닝하면 과적합되므로
+  별도 검증용 쌍을 추가해 분리 측정할 것.
+- 후보 하한을 낮추는 대신 질문 임베딩에 `taskType=SEMANTIC_SIMILARITY`를 적용해 임베딩 상한 자체를 개선.
+
+### 운영 참고
+
+- 검증 호출 토큰은 `done.token_usage`에 포함되지 않는다(응답 계약 불변). `llm_calls`의
+  `purpose="cache_verify"` 이벤트로만 확인 가능하며, 과금 집계 반영은 Spring과 협의할 항목이다.
+
 ## 후속 선택지
 
 - **질문 임베딩에 Gemini `taskType=SEMANTIC_SIMILARITY` 적용**: 문장 유사도에 맞춘 임베딩이라 same/different 분리도가 개선될 수 있음. 현재 embedder는 taskType을 지정하지 않고 검색용 임베딩과 분리해야 하므로 질문당 임베딩 1회 추가 비용.

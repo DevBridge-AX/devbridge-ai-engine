@@ -102,6 +102,16 @@ class Settings(BaseSettings):
     semantic_cache_ttl_seconds: int = 3600
     # 워크스페이스당 최대 엔트리 수 (초과 시 가장 오래 쓰이지 않은 것부터 제거)
     semantic_cache_max_entries: int = 500
+    # LLM 재검증(기본 off): 켜지면 candidate_threshold <= 유사도 < semantic_cache_threshold 구간의
+    # 최선 후보 1건만 REWRITE_MODEL로 "같은 질문인가"를 확인하고, YES일 때만 hit로 처리합니다.
+    # 유사도 >= semantic_cache_threshold는 기존처럼 검증 없이 즉시 hit입니다.
+    # 꺼져 있으면 동작이 기존과 완전히 같습니다.
+    semantic_cache_verify_enabled: bool = False
+    # 재검증 후보 하한 유사도. verify 활성 시에만 사용하며, semantic_cache_threshold보다 크면
+    # 후보 구간이 없는 것으로 간주해 재검증을 건너뜁니다(기동 오류 대신 경고 로그).
+    semantic_cache_candidate_threshold: float = Field(default=0.86, ge=0, le=1)
+    # 재검증 LLM 호출 타임아웃(초). 초과/오류/파싱 실패는 모두 miss로 처리합니다(fail-closed).
+    semantic_cache_verify_timeout_seconds: float = Field(default=3.0, gt=0)
 
     # Spring backend 연동
     spring_backend_base_url: str = "http://localhost:8080"
