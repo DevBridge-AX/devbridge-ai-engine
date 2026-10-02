@@ -156,6 +156,7 @@ JSON 파싱 오류를 던지면 `analyze_document()`가 이를 잡아 fallback �
 | 용도 | Git 커밋의 요약/영향범위/리스크/다음조치 생성 |
 | 호출 함수 | `call_structured()` → MAIN_MODEL |
 | 현재 모드 | `AI_ANALYSIS_MODE` 설정에 따름 |
+| 환경변수 | `AI_ANALYSIS_MODE`, `COMMIT_ANALYSIS_MAX_PER_BATCH` |
 | 호출 시점 | Git 커밋 인덱싱 시 (`pipelines/git_ingestion.py`) |
 
 **한국어 출력 규칙 / PII 최소화**: 커밋 분석 system prompt에 문서 분석과 동일한 취지의
@@ -165,11 +166,19 @@ JSON 파싱 오류를 던지면 `analyze_document()`가 이를 잡아 fallback �
 `GIT_COMMITS.author_email` 컬럼 저장과 임베딩/RAG 청크용 commit 텍스트에는 영향이
 없습니다.
 
-**비용 주의 — 커밋 수만큼 호출**: 커밋 분석은 **git push 1회에 포함된 커밋 수만큼**
-`call_structured()`를 호출합니다(예: 30개 커밋을 한 번에 push하면 30회 호출). 대량
-push 시 비용/지연이 선형으로 증가하므로, 필요 시 후속 과제로 배치당 분석 커밋 수를
-제한하는 `COMMIT_ANALYSIS_MAX_PER_BATCH`(초과분은 fallback 처리) 도입을 검토할 수
-있습니다(이번 범위에서는 구현하지 않음, 아이디어만 기록).
+**비용 주의 — 커밋 수만큼 호출**: 커밋 분석은 기본적으로 **git push 1회에 포함된 커밋
+수만큼** `call_structured()`를 호출합니다(예: 30개 커밋을 한 번에 push하면 30회 호출). 대량
+push 시 비용/지연이 선형으로 증가하므로 `COMMIT_ANALYSIS_MAX_PER_BATCH`로 상한을 둘 수
+있습니다.
+- `0`(기본): 무제한 — 기존 동작과 동일.
+- 양수 N: **배치 순서상 앞의 N개 커밋**만 LLM 분석을 시도하고, 나머지는 LLM 호출 없이
+  fallback 휴리스틱(`_fallback_analyze_commit`)으로 분석합니다. 임베딩/인덱싱은 모든 커밋에
+  대해 그대로 수행되며 상한은 분석에만 영향을 줍니다.
+- LLM 호출이 실패해 fallback으로 떨어진 커밋도 시도 1회로 셉니다(실패한 호출도 비용 발생).
+- `AI_ANALYSIS_MODE=fallback`(또는 API 키 없음)이면 상한은 의미가 없습니다.
+- 상한 초과 시 배치당 1회 info 로그(workspace_id, cap, 커밋 총수)를 남기고, `git_ingestion`
+  메트릭에 `analysis_llm_count`(LLM 시도 수)와 `analysis_capped_count`(상한으로 fallback
+  강제된 커밋 수)가 기록됩니다.
 
 **건당 토큰 비용** (라이브 검증 1회차 기준, purpose=`commit_analysis` 집계):
 - prompt_tokens 평균: 673 (2026-10-01 라이브 1회차, claude-sonnet-4-6, 표본 3건(소형 diff))
@@ -246,6 +255,7 @@ GROUNDING_MODEL=gemini-2.5-flash-lite # 그라운딩 판정 (thinking 모델은 
 EMBEDDING_MODEL=gemini-embedding-2    # 임베딩 생성
 
 AI_ANALYSIS_MODE=fallback             # 문서 분석 모드 (fallback | llm)
+COMMIT_ANALYSIS_MAX_PER_BATCH=0       # push 1회당 커밋 LLM 분석 상한 (0=무제한, 초과분 fallback)
 DOCUMENT_ANALYSIS_MODEL=fallback-v1   # 문서 분석 표시용 모델명
 ```
 
