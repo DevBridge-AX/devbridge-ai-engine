@@ -1,0 +1,102 @@
+[
+  {
+    "doc_key": "code-review-rules",
+    "file": "code-review-rules.md",
+    "title": "코드 리뷰 규칙",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "코드 리뷰",
+    "note": "PR 리뷰어 수/크기/승인 조건"
+  },
+  {
+    "doc_key": "notification-api",
+    "file": "notification-api.md",
+    "title": "알림 서비스 API 명세",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "알림 API",
+    "note": "엔드포인트/제약/재시도"
+  },
+  {
+    "doc_key": "order-schema",
+    "file": "order-schema.md",
+    "title": "주문 DB 스키마",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "DB 스키마",
+    "note": "ORDERS/ORDER_ITEMS/STATUS_HISTORY"
+  },
+  {
+    "doc_key": "batch-staging",
+    "file": "batch-schedule-staging.md",
+    "title": "스테이징 배치 스케줄 명세",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "배치 스케줄",
+    "note": "distractor 쌍(스테이징 측)"
+  },
+  {
+    "doc_key": "batch-prod",
+    "file": "batch-schedule-prod.md",
+    "title": "운영 배치 스케줄 명세",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "배치 스케줄",
+    "note": "distractor 쌍(운영 측)"
+  },
+  {
+    "doc_key": "log-retention",
+    "file": "log-retention.md",
+    "title": "로그 보존 정책",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "로그 보존",
+    "note": "보존 기간/삭제/예외"
+  },
+  {
+    "doc_key": "settlement-design",
+    "file": "settlement-design.md",
+    "title": "결제 정산 과제 설계",
+    "document_type": "markdown",
+    "task_id": "task-billing",
+    "sensitivity_level": "normal",
+    "topic": "정산 설계",
+    "note": "task-billing 한정"
+  },
+  {
+    "doc_key": "retro-billing",
+    "file": "retro-billing.md",
+    "title": "정산 과제 스프린트 3 회고",
+    "document_type": "markdown",
+    "task_id": "task-billing",
+    "sensitivity_level": "normal",
+    "topic": "회의록/회고",
+    "note": "task-billing 한정"
+  },
+  {
+    "doc_key": "onboarding",
+    "file": "onboarding-checklist.md",
+    "title": "신규 입사자 온보딩 체크리스트",
+    "document_type": "markdown",
+    "task_id": "task-onboarding",
+    "sensitivity_level": "normal",
+    "topic": "온보딩",
+    "note": "task-onboarding 한정"
+  },
+  {
+    "doc_key": "hr-payroll-schema",
+    "file": "hr-payroll-schema.md",
+    "title": "인사 급여 테이블 스키마",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "restricted",
+    "topic": "급여 스키마",
+    "note": "restricted 문서"
+  }
+]
