@@ -21,6 +21,7 @@ from scripts.eval.cache_eval_metrics import (
 )
 
 _DATASET = Path(__file__).resolve().parents[1] / "scripts" / "eval" / "datasets" / "cache_pairs.jsonl"
+_HOLDOUT = Path(__file__).resolve().parents[1] / "scripts" / "eval" / "datasets" / "cache_pairs_holdout.jsonl"
 
 
 def _records() -> list[dict]:
@@ -304,3 +305,110 @@ def test_old_cache_report_has_no_verify_section():
 
     assert "LLM 재검증" not in _report(_records())
     assert "LLM 재검증 스윕" in _report(_verify_records())
+
+
+# ---------------------------------------------------------------------------
+# 검증 프롬프트 버전별 비교 (3회차)
+# ---------------------------------------------------------------------------
+
+from scripts.eval.cache_eval_metrics import (  # noqa: E402
+    group_by_prompt_version,
+    has_multiple_prompt_versions,
+    parse_prompt_versions,
+    render_version_comparison,
+)
+
+
+def _versioned_records() -> list[dict]:
+    """v1: 후보 쌍을 전부 NO(과보수), v2: 정답과 일치하도록 판정한 합성 레코드."""
+    base = _verify_records()
+    v1 = [{**r, "verify_same": False, "verify_outcome": "no", "verify_prompt_version": "v1"} for r in base]
+    v2 = [
+        {**r, "verify_same": r["kind"] == "same_intent", "verify_outcome": "yes" if r["kind"] == "same_intent" else "no",
+         "verify_prompt_version": "v2"}
+        for r in base
+    ]
+    return v1 + v2
+
+
+def test_parse_prompt_versions():
+    assert parse_prompt_versions(None, "v1") == ["v1"]
+    assert parse_prompt_versions("v2", "v1") == ["v2"]
+    assert parse_prompt_versions("v1,v2", "v1") == ["v1", "v2"]
+    assert parse_prompt_versions(" v1 , v2,v1,", "v1") == ["v1", "v2"]
+    with pytest.raises(ValueError):
+        parse_prompt_versions(" , ", "v1")
+
+
+def test_group_by_prompt_version_and_old_cache():
+    groups = group_by_prompt_version(_versioned_records())
+    assert list(groups) == ["v1", "v2"]
+    assert len(groups["v1"]) == len(groups["v2"]) == 8
+    # 구버전 캐시(필드 없음)는 단일 그룹 "" 이고 다버전으로 취급하지 않는다
+    old = _records()
+    assert list(group_by_prompt_version(old)) == [""]
+    assert has_multiple_prompt_versions(old) is False
+    assert has_multiple_prompt_versions(_verify_records()) is False  # 단일 버전 v1
+    assert has_multiple_prompt_versions(_versioned_records()) is True
+
+
+def test_render_version_comparison_table():
+    groups = group_by_prompt_version(_versioned_records())
+    md = render_version_comparison(groups, direct_threshold=0.95)
+    assert "## 검증 프롬프트 버전 비교" in md
+    assert "hit_rate@0.80" in md and "hit_rate@0.85" in md and "hit_rate@0.86" in md
+    assert "false_hit_rate" in md
+    rows = {line.split("|")[1].strip(): line for line in md.splitlines() if line.startswith("| v") and not line.startswith("| version")}
+    assert set(rows) == {"v1", "v2"}
+    # v1: 모든 쌍 NO -> false YES 0, false NO 4(same 4쌍)
+    v1_cells = [c.strip() for c in rows["v1"].strip("|").split("|")]
+    assert v1_cells[2:4] == ["0", "4"]
+    # v2: 전부 정답 -> 정확도 100%, false YES/NO 0
+    v2_cells = [c.strip() for c in rows["v2"].strip("|").split("|")]
+    assert v2_cells[1] == "100.0%" and v2_cells[2:4] == ["0", "0"]
+
+
+def test_report_multi_version_sections():
+    from scripts.eval.cache_eval import _report
+
+    report = _report(_versioned_records())
+    assert "# 검증 프롬프트 v1" in report and "# 검증 프롬프트 v2" in report
+    assert report.count("## LLM 재검증 스윕") == 2
+    assert "## 검증 프롬프트 버전 비교" in report
+
+
+def test_report_single_version_unchanged():
+    from scripts.eval.cache_eval import _report
+
+    report = _report(_verify_records())
+    assert "검증 프롬프트 버전 비교" not in report
+    assert report.count("## LLM 재검증 스윕") == 1
+
+
+class TestHoldoutDatasetFile:
+    def test_holdout_shape(self):
+        pairs = load_dataset(_HOLDOUT)
+        assert len(pairs) == 30
+        assert sum(1 for p in pairs if p["kind"] == "same_intent") == 15
+        assert sum(1 for p in pairs if p["kind"] == "different_intent") == 15
+        ids = [p["id"] for p in pairs]
+        assert len(set(ids)) == 30 and all(i.startswith("h") for i in ids)
+        for p in pairs:
+            assert p["q1"].strip() and p["q2"].strip() and p["q1"] != p["q2"]
+            assert p["note"].strip()
+
+    def test_holdout_has_no_sentence_overlap_with_tuning_set(self):
+        tuning = {q for p in load_dataset(_DATASET) for q in (p["q1"], p["q2"])}
+        holdout = [q for p in load_dataset(_HOLDOUT) for q in (p["q1"], p["q2"])]
+        assert not (tuning & set(holdout))
+        assert len(set(holdout)) == len(holdout)
+
+
+def test_cli_verify_prompt_version_validation(capsys):
+    from scripts.eval.cache_eval import main
+
+    with pytest.raises(SystemExit):
+        main(["--from-cache", "x.jsonl", "--verify-prompt-version", "v1"])  # --collect --verify 없이
+    with pytest.raises(SystemExit):
+        main(["--collect", "--verify", "--verify-prompt-version", "v1,v3"])
+    assert "알 수 없는 검증 프롬프트 버전" in capsys.readouterr().err

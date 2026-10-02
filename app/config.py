@@ -118,6 +118,10 @@ class Settings(BaseSettings):
     semantic_cache_candidate_threshold: float = Field(default=0.86, ge=0, le=1)
     # 재검증 LLM 호출 타임아웃(초). 초과/오류/파싱 실패는 모두 miss로 처리합니다(fail-closed).
     semantic_cache_verify_timeout_seconds: float = Field(default=3.0, gt=0)
+    # 재검증 프롬프트 버전(app/core/cache/verifier.py).
+    # 기본값 근거: docs/semantic-cache-eval.md 3회차 — 홀드아웃 검증기 정확도 70% → 90%(false YES 0 유지).
+    # v1은 "애매하면 NO" 규칙의 과보수 프롬프트로, 비교·회귀 확인용으로 유지합니다.
+    semantic_cache_verify_prompt_version: Literal["v1", "v2"] = "v2"
 
     # Spring backend 연동
     spring_backend_base_url: str = "http://localhost:8080"

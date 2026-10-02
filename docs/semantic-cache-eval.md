@@ -249,6 +249,91 @@ python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.json
   (이전에는 `error_type=null`·토큰 0의 성공 호출처럼 보였다). `chat_metrics`에는
   `cache_verify_ms`/`cache_verify_result`가 남는다.
 
+## 3회차 (검증 프롬프트 v2, 홀드아웃)
+
+2회차 결론: 검증기 v1은 false YES 0 / false NO 12로 지나치게 보수적이었다("판단이 애매하면 NO").
+3회차는 이를 완화한 프롬프트 v2(`app/core/cache/verifier.py`의 `CACHE_VERIFY_SYSTEM_PROMPT_V2`)를
+같은 조건에서 v1과 비교한다. 설정 `SEMANTIC_CACHE_VERIFY_PROMPT_VERSION`은 측정 전 기본 `v1`이었고, 아래 결과를 근거로 `v2`로 변경했다.
+
+### 방법
+
+- v1 vs v2: v2는 표기(영문/한글/약어), 어순, 높임말, 동의어, 일반 용어 ↔ 사내 고유명사, 간접 표현은 같은
+  질문(YES)으로 보고, 값·대상/주체·조건·요구 정보 종류가 다르면 NO로 둔다. "애매하면 NO" 대신
+  "두 질문의 정답이 동일한 한 문장일 가능성이 높으면 YES"를 기준으로 한다. v1 텍스트는 그대로 보존된다.
+- 튜닝용 40쌍(`scripts/eval/datasets/cache_pairs.jsonl`) vs 홀드아웃 30쌍
+  (`scripts/eval/datasets/cache_pairs_holdout.jsonl`, same 15 / different 15). 프롬프트 설계에 홀드아웃은
+  사용하지 않았고, 두 데이터셋의 문장은 프롬프트에 예시로 넣지 않았다(누수 테스트로 고정).
+  홀드아웃 구성: 코퍼스 4문서 기반 15쌍(40쌍에서 쓰지 않은 사실) + 신규 워크스페이스 주제 15쌍
+  (코드리뷰, 온보딩, 알림, 로그 보존, 배치, 캐시 설정). same은 영문/한글 표기, 고유명사 ↔ 일반 용어,
+  간접 ↔ 직접 표현, 의문문 ↔ 명령문, 반말/존댓말을 포함하고, different는 수치·기간 / 대상 / 환경 /
+  정보 종류 / 조건 차이의 하드 네거티브다.
+- `--verify-prompt-version v1,v2`: 쌍마다 버전별로 검증해 (쌍, 버전)당 레코드 1건을 저장한다. 임베딩은 쌍당
+  1회만 계산한다. LLM 호출 수는 쌍 수 x 버전 수(40쌍 80회 + 홀드아웃 30쌍 60회 = 총 140회).
+- `--from-cache`는 버전이 2개 이상이면 버전별 섹션과 비교표(version | verifier accuracy | false YES |
+  false NO | hit_rate@0.80/0.85/0.86 | false_hit_rate)를 출력한다.
+
+### 명령
+
+```bash
+# 수집 (실 임베딩 + 실 LLM 호출, 비용 발생) — 튜닝용 40쌍 / 홀드아웃 30쌍 각각 v1,v2 비교
+RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify --verify-prompt-version v1,v2
+RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify --verify-prompt-version v1,v2 \
+    --dataset scripts/eval/datasets/cache_pairs_holdout.jsonl
+
+# 오프라인 리포트 (API 호출 없음)
+python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<tuning-timestamp>.jsonl --direct-threshold 0.95
+python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<holdout-timestamp>.jsonl --direct-threshold 0.95
+```
+
+### 채택 기준
+
+- **홀드아웃 기준** hit_rate ≥ 50% 그리고 오적중(false_hit_rate) ≤ 2%. 튜닝용 40쌍 결과는 참고용이다.
+- 홀드아웃 different 15쌍 기준 2% 이하는 사실상 오적중 0건을 뜻한다(표본이 작아 운영 안전 보장은 아님).
+- 임베딩 상한(유사도 낮은 same 쌍은 후보에도 들지 못함)은 프롬프트로 개선되지 않으므로 hit_rate 상한을 함께 해석한다.
+
+### 결과 (2026-10-02, `data/eval/cache-tuning-v1v2-20261002-111641.jsonl`, `data/eval/cache-holdout-v1v2-20261002-111744.jsonl`)
+
+- 검증 모델 `claude-haiku-4-5-20251001`, 임베딩 `gemini-embedding-2`, 즉시 hit 임계치 0.95. 튜닝용 40쌍·홀드아웃 30쌍에 v1/v2 각 1회 호출(LLM 140회).
+
+**검증기 단독 (유사도 무관, 전 쌍)**
+
+| 데이터셋 | version | 정확도 | false YES | false NO | 지연 p50/p95 (ms) | prompt 토큰/호출 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 튜닝 40쌍 | v1 | 67.5% | 0 | 13 | 691 / 924 | 469 |
+| 튜닝 40쌍 | v2 | 72.5% | 0 | 11 | 695 / 1,027 | 724 |
+| 홀드아웃 30쌍 | v1 | 70.0% | 0 | 9 | 714 / 773 | 471 |
+| **홀드아웃 30쌍** | **v2** | **90.0%** | 0 | 3 | 710 / 858 | 726 |
+
+**임계치 + 재검증 스윕 (direct 0.95)**
+
+| 데이터셋 | version | hit@0.80 | hit@0.85 | hit@0.86 | false_hit |
+| --- | --- | --- | --- | --- | --- |
+| 튜닝 | v1 | 35.0% | 30.0% | 25.0% | 0.0% |
+| 튜닝 | v2 | 35.0% | 30.0% | 25.0% | 0.0% |
+| 홀드아웃 | v1 | 26.7% | 20.0% | 13.3% | 13.3% (2/15) |
+| 홀드아웃 | v2 | 40.0% | 26.7% | 13.3% | 13.3% (2/15) |
+
+- 홀드아웃 오적중 2건(h016 0.961, h018 0.957)은 **즉시 hit 임계치 0.95 구간**에서 검증 없이 hit된 것으로, 검증기의
+  false YES는 두 버전·두 데이터셋 모두 0건이다. "30일 ↔ 90일", "02:00 ↔ 14:00"처럼 값만 다른 쌍은 임베딩 유사도가
+  0.95를 넘는다.
+- 홀드아웃 same_intent 유사도 중앙값 0.798 → 15쌍 중 8쌍이 후보 하한 0.80 미만이라 검증기가 완벽해도 hit 상한은 약 47%.
+- v1 튜닝 정확도가 2회차(70.0%)와 다른 것은 모델 비결정성(2쌍 차이).
+
+### 결론
+
+- **채택 기준(홀드아웃 hit ≥ 50%, 오적중 ≤ 2%) 미달**. 재검증 기본값(`semantic_cache_verify_enabled=false`)은 유지한다.
+- **v2 프롬프트는 유효**: 홀드아웃 false NO 9 → 3(정확도 70 → 90%), false YES 0 유지, hit@0.80 26.7 → 40.0%.
+  튜닝셋 개선 폭(67.5 → 72.5%)이 작은 것은 남은 오판이 "맥락 지식 필요"(p003 로테이션↔교체 주기 등) 유형이기 때문.
+  비용은 prompt 토큰 +54%(469 → 724), 지연은 동일.
+- **즉시 hit 임계치 0.95는 값만 다른 쌍에 안전하지 않다**: 홀드아웃 오적중 2건 모두 이 구간. 재검증을 켠다면
+  direct 임계치를 0.97 이상으로 올리거나(홀드아웃 different_intent 최대 0.961) 모든 후보를 검증하는 편이 안전하다.
+- **기본값 변경(승인됨, 2026-10-02)**: `semantic_cache_verify_prompt_version="v2"`. 재검증 자체가 기본 off이므로 운영 동작은 바뀌지 않으며, v1은 비교·회귀 확인용으로 유지한다.
+
+### 후속 과제
+
+- 임베딩 상한 개선: 질문 임베딩 `taskType=SEMANTIC_SIMILARITY` 실험(10-03 계획 D1-b). 홀드아웃 same_intent 8/15가 0.80 미만.
+- direct 임계치 상향(0.97) 또는 "항상 검증" 모드 추가 시 오적중 0%·hit@0.80 40%(v2) 조합이 가능한지 재스윕.
+
 ## 후속 선택지
 
 - **질문 임베딩에 Gemini `taskType=SEMANTIC_SIMILARITY` 적용**: 문장 유사도에 맞춘 임베딩이라 same/different 분리도가 개선될 수 있음. 현재 embedder는 taskType을 지정하지 않고 검색용 임베딩과 분리해야 하므로 질문당 임베딩 1회 추가 비용.
