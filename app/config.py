@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     # llm 모드에서는 실제 호출 모델명으로 사용
     document_analysis_model: str = "fallback-v1"
 
+    # push 1회(배치)당 커밋 분석 LLM 호출 상한 (AI_ANALYSIS_MODE=llm일 때만 의미 있음)
+    # 0 = 무제한(현행 동작), 양수 = 배치 순서상 앞의 N개 커밋만 LLM 분석,
+    # 초과분은 LLM 호출 없이 fallback 휴리스틱(_fallback_analyze_commit)으로 처리
+    # (임베딩/인덱싱은 모든 커밋에 대해 그대로 수행)
+    commit_analysis_max_per_batch: int = Field(0, ge=0)
+
     # provider.py 컨텍스트 길이 가드
     max_context_tokens: int = 30000
 

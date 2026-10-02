@@ -58,6 +58,8 @@ async def ingest_git_commits(
     데이터소스 민감도만 스냅샷합니다(docs/access-control.md §3.2).
     """
     total_start = time.perf_counter()
+    # 커밋 분석 LLM 호출 상한 집계(_run이 채움). 예외 경로에서는 0으로 남습니다.
+    analysis_stats = {"llm_count": 0, "capped_count": 0}
 
     with SessionLocal() as db:
         try:
@@ -77,6 +79,7 @@ async def ingest_git_commits(
                 source_id=source_id,
                 commits=commits,
                 sensitivity_level=sensitivity_level,
+                analysis_stats=analysis_stats,
             )
 
             if total_tokens > 0:
@@ -98,6 +101,8 @@ async def ingest_git_commits(
                 embedding_provider_tokens=embedding_provider_tokens,
                 embed_ms=embed_ms, result=result, error_type=error_type,
                 failed_commit_count=failed_commit_count,
+                analysis_llm_count=analysis_stats["llm_count"],
+                analysis_capped_count=analysis_stats["capped_count"],
             )
         except Exception as exc:
             logger.exception("git_ingestion failed: workspace_id=%s", workspace_id)
@@ -119,6 +124,7 @@ async def _run(
     source_id: str | None,
     commits: list[CommitData],
     sensitivity_level: str = "normal",
+    analysis_stats: dict[str, int] | None = None,
 ) -> tuple[int, str, int, int, int, int | None, float, int, list[tuple[int, str]]]:
     """커밋 단위 부분 성공으로 인덱싱합니다.
 
@@ -130,6 +136,12 @@ async def _run(
     embedding_input_chars, embedding_provider_tokens(실측, 커밋 전체 합산; 실제로 임베딩을
     호출한 커밋 중 하나라도 실측값이 없으면 None), embed_ms, failed_commit_count,
     failures[(commit_index, error_type)]).
+
+    커밋 분석 LLM 호출 상한: `COMMIT_ANALYSIS_MAX_PER_BATCH`(>0)이면 배치 순서상 앞의 N개
+    커밋만 LLM 분석 경로를 시도하고, 나머지는 LLM 호출 없이 fallback 휴리스틱으로 분석합니다
+    (임베딩/인덱싱은 모든 커밋에 대해 그대로 수행). 시도 횟수는 LLM 호출이 실패해 fallback으로
+    떨어진 경우에도 센다(실패한 시도도 호출 비용이 발생하므로). `analysis_stats`가 주어지면
+    `llm_count`(LLM 경로 시도 수)와 `capped_count`(상한으로 fallback 강제된 커밋 수)를 채웁니다.
     """
     settings = get_settings()
     vector_store = get_vector_store()
@@ -143,6 +155,12 @@ async def _run(
     embedding_provider_tokens_complete = True
     embed_ms_total = 0.0
     failures: list[tuple[int, str]] = []
+
+    analysis_cap = max(int(getattr(settings, "commit_analysis_max_per_batch", 0) or 0), 0)
+    llm_analysis_enabled = _is_llm_analysis_enabled(settings)
+    llm_attempts = 0
+    capped_count = 0
+    cap_logged = False
 
     for index, commit in enumerate(commits):
         added_vector_ids: list[str] = []
@@ -178,7 +196,27 @@ async def _run(
                     added_vector_ids=added_vector_ids,
                 )
 
-                analysis = await _analyze_commit(commit=commit, commit_text=commit_text)
+                use_llm = True
+                if llm_analysis_enabled:
+                    if analysis_cap > 0 and llm_attempts >= analysis_cap:
+                        use_llm = False
+                        capped_count += 1
+                        if not cap_logged:
+                            cap_logged = True
+                            logger.info(
+                                "git_ingestion: commit analysis LLM cap reached. "
+                                "remaining commits use fallback. workspace_id=%s cap=%d commit_total=%d",
+                                workspace_id, analysis_cap, len(commits),
+                            )
+                    else:
+                        llm_attempts += 1
+                if analysis_stats is not None:
+                    analysis_stats["llm_count"] = llm_attempts
+                    analysis_stats["capped_count"] = capped_count
+
+                analysis = await _analyze_commit(
+                    commit=commit, commit_text=commit_text, use_llm=use_llm
+                )
                 _upsert_commit_analysis(
                     db=db,
                     workspace_id=workspace_id,
@@ -249,6 +287,8 @@ def _record_git_ingestion_metric(
     result: str,
     error_type: str | None,
     failed_commit_count: int = 0,
+    analysis_llm_count: int = 0,
+    analysis_capped_count: int = 0,
 ) -> None:
     """Git 커밋 인덱싱 1건(배치)의 지표를 기록합니다. 커밋 메시지/diff는 포함하지 않습니다."""
     total_ms = (time.perf_counter() - total_start) * 1000
@@ -256,6 +296,10 @@ def _record_git_ingestion_metric(
         "workspace_id": workspace_id,
         "commit_count": commit_count,
         "failed_commit_count": failed_commit_count,
+        # 커밋 분석 LLM 경로를 시도한 커밋 수(실패 후 fallback 포함)와, COMMIT_ANALYSIS_MAX_PER_BATCH
+        # 상한 때문에 LLM 없이 fallback으로 처리된 커밋 수. 상한 미사용(0) 시 capped는 0.
+        "analysis_llm_count": analysis_llm_count,
+        "analysis_capped_count": analysis_capped_count,
         "new_chunk_count": new_chunk_count,
         "skipped_chunk_count": skipped_chunk_count,
         # 임베딩 API로 전송한 청크 텍스트 길이 합(배치 전체 누적; 외부 예외 시에만 None).
@@ -499,11 +543,17 @@ def _format_changed_file(changed_file: GitChangedFileData) -> str:
     return "\n".join(parts)
 
 
-async def _analyze_commit(commit: CommitData, commit_text: str) -> dict:
-    settings = get_settings()
+def _is_llm_analysis_enabled(settings) -> bool:
+    """커밋 분석이 LLM 경로를 탈 수 있는 설정인지(mode == llm 이고 API 키 존재) 반환합니다."""
     mode = getattr(settings, "ai_analysis_mode", "fallback").lower().strip()
+    return mode == "llm" and bool(getattr(settings, "gms_api_key", ""))
 
-    if mode == "llm" and getattr(settings, "gms_api_key", ""):
+
+async def _analyze_commit(commit: CommitData, commit_text: str, use_llm: bool = True) -> dict:
+    """커밋 분석. use_llm=False면(배치당 LLM 상한 초과) LLM 호출 없이 fallback을 사용합니다."""
+    settings = get_settings()
+
+    if use_llm and _is_llm_analysis_enabled(settings):
         try:
             return await _llm_analyze_commit(commit, commit_text)
         except Exception:
