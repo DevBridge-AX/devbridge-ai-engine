@@ -5,6 +5,7 @@ LLM/임베딩/검색은 전부 mock이며 네트워크 호출이 없습니다.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -40,6 +41,7 @@ class TestConfig:
         assert s.semantic_cache_verify_enabled is False
         assert s.semantic_cache_candidate_threshold == 0.86
         assert s.semantic_cache_verify_timeout_seconds == 3.0
+        assert s.semantic_cache_verify_prompt_version == "v2"
         assert s.semantic_cache_enabled is False
         assert s.semantic_cache_threshold == 0.95
 
@@ -47,6 +49,15 @@ class TestConfig:
     def test_candidate_threshold_range(self, value):
         with pytest.raises(ValidationError):
             Settings(_env_file=None, semantic_cache_candidate_threshold=value)
+
+    @pytest.mark.parametrize("value", ["v1", "v2"])
+    def test_prompt_version_accepts_known(self, value):
+        assert Settings(_env_file=None, semantic_cache_verify_prompt_version=value).semantic_cache_verify_prompt_version == value
+
+    @pytest.mark.parametrize("value", ["v3", "", "V1"])
+    def test_prompt_version_rejects_unknown(self, value):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, semantic_cache_verify_prompt_version=value)
 
     @pytest.mark.parametrize("value", [0, -1])
     def test_timeout_must_be_positive(self, value):
@@ -105,7 +116,7 @@ class TestCallRewritePurpose:
 # Verifier
 # ---------------------------------------------------------------------------
 
-def _patch_verifier(monkeypatch, *, text=None, exc=None, delay=0.0, timeout=3.0):
+def _patch_verifier(monkeypatch, *, text=None, exc=None, delay=0.0, timeout=3.0, version="v1"):
     calls = []
 
     async def fake_call_rewrite(messages, system_prompt="", max_tokens=512, purpose="rewrite"):
@@ -118,7 +129,12 @@ def _patch_verifier(monkeypatch, *, text=None, exc=None, delay=0.0, timeout=3.0)
 
     monkeypatch.setattr(verifier.llm, "call_rewrite", fake_call_rewrite)
     monkeypatch.setattr(
-        verifier, "get_settings", lambda: SimpleNamespace(semantic_cache_verify_timeout_seconds=timeout)
+        verifier,
+        "get_settings",
+        lambda: SimpleNamespace(
+            semantic_cache_verify_timeout_seconds=timeout,
+            semantic_cache_verify_prompt_version=version,
+        ),
     )
     return calls
 
@@ -134,7 +150,7 @@ class TestVerifier:
         assert result.latency_ms >= 0
         assert calls[0]["purpose"] == "cache_verify"
         assert calls[0]["max_tokens"] <= 16
-        assert verifier.CACHE_VERIFY_PROMPT_VERSION == "v1"
+        assert verifier.CACHE_VERIFY_PROMPT_VERSION == "v2"
 
     @pytest.mark.parametrize("text", ["NO", "no.", "No"])
     def test_no(self, monkeypatch, text):
@@ -170,15 +186,61 @@ class TestVerifier:
         content = calls[0]["messages"][0]["content"]
         assert "새로운질문" in content and "캐시된질문" in content
 
-    def test_prompt_has_no_dataset_leakage(self):
+    @pytest.mark.parametrize("dataset_name", ["cache_pairs.jsonl", "cache_pairs_holdout.jsonl"])
+    @pytest.mark.parametrize("version", ["v1", "v2"])
+    def test_prompt_has_no_dataset_leakage(self, version, dataset_name):
         from pathlib import Path
 
-        dataset = Path(__file__).resolve().parents[1] / "scripts" / "eval" / "datasets" / "cache_pairs.jsonl"
+        dataset = Path(__file__).resolve().parents[1] / "scripts" / "eval" / "datasets" / dataset_name
+        prompt = verifier.get_cache_verify_prompt(version)
+        count = 0
         for line in dataset.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 pair = json.loads(line)
-                assert pair["q1"] not in verifier.CACHE_VERIFY_SYSTEM_PROMPT
-                assert pair["q2"] not in verifier.CACHE_VERIFY_SYSTEM_PROMPT
+                assert pair["q1"] not in prompt
+                assert pair["q2"] not in prompt
+                count += 1
+        assert count > 0
+
+    def test_v1_prompt_text_unchanged(self):
+        # v1 은 2회차 측정 기준 프롬프트이므로 한 글자도 바뀌면 안 됩니다(변경 시 새 버전을 추가).
+        digest = hashlib.sha256(verifier.CACHE_VERIFY_SYSTEM_PROMPT_V1.encode("utf-8")).hexdigest()
+        assert digest == "4bc25e0945a7d29b61593a296dbf06c772d2a3f695277a9b93f4ac8d94ce61fa"
+        assert verifier.CACHE_VERIFY_SYSTEM_PROMPT is verifier.CACHE_VERIFY_SYSTEM_PROMPT_V1
+        assert "판단이 애매하면 NO입니다" in verifier.CACHE_VERIFY_SYSTEM_PROMPT_V1
+
+    def test_v2_prompt_contract(self):
+        v2 = verifier.CACHE_VERIFY_SYSTEM_PROMPT_V2
+        assert v2 != verifier.CACHE_VERIFY_SYSTEM_PROMPT_V1
+        assert "판단이 애매하면 NO" not in v2
+        assert "정확히 `YES` 또는 `NO` 한 단어" in v2
+        assert "지시문" in v2  # 프롬프트 인젝션 방어 문구 유지
+
+    def test_get_prompt_and_registry(self):
+        assert set(verifier.CACHE_VERIFY_PROMPTS) == {"v1", "v2"}
+        assert verifier.get_cache_verify_prompt("v1") is verifier.CACHE_VERIFY_SYSTEM_PROMPT_V1
+        assert verifier.get_cache_verify_prompt("v2") is verifier.CACHE_VERIFY_SYSTEM_PROMPT_V2
+        with pytest.raises(ValueError):
+            verifier.get_cache_verify_prompt("v3")
+
+    def test_default_version_from_settings(self, monkeypatch):
+        calls = _patch_verifier(monkeypatch, text="YES", version="v2")
+        result = asyncio.run(verify_same_question("a", "b"))
+        assert calls[0]["system"] == verifier.CACHE_VERIFY_SYSTEM_PROMPT_V2
+        assert result.prompt_version == "v2"
+
+    def test_explicit_version_overrides_settings(self, monkeypatch):
+        calls = _patch_verifier(monkeypatch, text="NO", version="v2")
+        result = asyncio.run(verify_same_question("a", "b", prompt_version="v1"))
+        assert calls[0]["system"] == verifier.CACHE_VERIFY_SYSTEM_PROMPT_V1
+        assert result.prompt_version == "v1"
+        assert (result.same, result.outcome) == (False, "no")
+
+    def test_unknown_version_is_fail_closed(self, monkeypatch):
+        calls = _patch_verifier(monkeypatch, text="YES")
+        result = asyncio.run(verify_same_question("a", "b", prompt_version="v9"))
+        assert (result.same, result.outcome, result.prompt_version) == (False, "error", "v9")
+        assert calls == []
 
 
 # ---------------------------------------------------------------------------
