@@ -433,3 +433,72 @@ class TestPipelineVerify:
         env.embedding = _vec(0.9)  # 후보 구간 없음 → 검증 없이 miss
         _run(_request())
         assert env.verify_calls == [] and env.stream_calls == 1
+
+
+class TestPipelineVerifyMetrics:
+    """chat_metrics의 cache_verify_ms / cache_verify_result 기록."""
+
+    def test_verified_hit_records_yes_and_latency(self, env):
+        env.verdict = VerifyResult(same=True, outcome="yes", latency_ms=12.5)
+        _seed(env)
+        env.embedding = _vec(0.9)
+
+        _run(_request())
+
+        record = _last_record(env)
+        assert record["cache_hit"] is True
+        assert record["cache_verify_result"] == "yes"
+        assert record["cache_verify_ms"] == pytest.approx(12.5)
+
+    def test_rejected_candidate_records_no_on_miss_path(self, env):
+        _seed(env)
+        env.verdict = VerifyResult(same=False, outcome="no", latency_ms=7.0)
+        env.embedding = _vec(0.9)
+
+        _run(_request())
+
+        record = _last_record(env)
+        assert record["cache_hit"] is False
+        assert record["cache_verify_result"] == "no"
+        assert record["cache_verify_ms"] == pytest.approx(7.0)
+
+    def test_timeout_outcome_recorded(self, env):
+        _seed(env)
+        env.verdict = VerifyResult(same=False, outcome="timeout", latency_ms=3000.0)
+        env.embedding = _vec(0.9)
+
+        _run(_request())
+
+        record = _last_record(env)
+        assert record["cache_hit"] is False
+        assert record["cache_verify_result"] == "timeout"
+
+    def test_verify_disabled_records_none(self, env):
+        env.settings.semantic_cache_verify_enabled = False
+        _seed(env)
+        env.embedding = _vec(0.9)
+
+        _run(_request())
+
+        record = _last_record(env)
+        assert record["cache_verify_result"] is None
+        assert record["cache_verify_ms"] is None
+
+    def test_above_threshold_hit_has_no_verify(self, env):
+        _seed(env)
+
+        _run(_request())
+
+        record = _last_record(env)
+        assert record["cache_hit"] is True
+        assert record["cache_verify_result"] is None
+        assert record["cache_verify_ms"] is None
+
+    def test_access_check_failure_records_none(self, env):
+        _seed(env)
+        env.allowed_override = set()
+        env.embedding = _vec(0.9)
+
+        _run(_request())
+
+        assert _last_record(env)["cache_verify_result"] is None

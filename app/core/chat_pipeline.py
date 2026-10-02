@@ -98,6 +98,8 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
     cache_hit = False
     cache_similarity: float | None = None
     cache_lookup_ms: float | None = None
+    cache_verify_ms: float | None = None
+    cache_verify_result: str | None = None
     cache = None
     ns = None
     cache_generation = 0
@@ -147,6 +149,8 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
                 with timer.measure("cache_verify_ms"):
                     verdict = await verifier.verify_same_question(rewritten_query, entry.query)
                 verified = verdict.same
+                cache_verify_ms = verdict.latency_ms
+                cache_verify_result = verdict.outcome
                 if verified:
                     cache.mark_hit(ns, entry)
             if verified:
@@ -181,6 +185,8 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
                     cache_hit=True,
                     cache_similarity=cache_similarity,
                     cache_lookup_ms=cache_lookup_ms,
+                    cache_verify_ms=cache_verify_ms,
+                    cache_verify_result=cache_verify_result,
                 )
                 yield ChatEvent(
                     event="done",
@@ -225,6 +231,8 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
         "cache_hit": False,
         "cache_similarity": None,
         "cache_lookup_ms": cache_lookup_ms,
+        "cache_verify_ms": cache_verify_ms,
+        "cache_verify_result": cache_verify_result,
     }
 
     if not grounding_result.is_groundable:
@@ -365,6 +373,8 @@ def _record_chat_metric(
     cache_hit: bool = False,
     cache_similarity: float | None = None,
     cache_lookup_ms: float | None = None,
+    cache_verify_ms: float | None = None,
+    cache_verify_result: str | None = None,
 ) -> None:
     """chat 응답 1건의 지표를 기록합니다.
 
@@ -413,6 +423,8 @@ def _record_chat_metric(
         "cache_hit": cache_hit,
         "cache_similarity": cache_similarity,
         "cache_lookup_ms": cache_lookup_ms,
+        "cache_verify_ms": cache_verify_ms,
+        "cache_verify_result": cache_verify_result,
     }
     record_metric("chat_metrics", payload)
 
