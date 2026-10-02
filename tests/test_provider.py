@@ -13,6 +13,7 @@ import pytest
 
 from app.core.llm import provider
 from app.core.llm.provider import LLMUsage, call_grounding
+from app.core.rag.grounding_prompts import get_grounding_prompt
 
 _BASE_URL = "http://gms.test/v1beta"
 _MODEL = "gemini-test-lite"
@@ -95,7 +96,7 @@ class TestCallGroundingNormal:
         body = json.loads(req.content)
         # system prompt는 user/model 선행 턴으로, 사용자 프롬프트는 마지막 user 턴으로 전달
         assert [c["role"] for c in body["contents"]] == ["user", "model", "user"]
-        assert body["contents"][0]["parts"][0]["text"] == provider._GROUNDING_SYSTEM_PROMPT
+        assert body["contents"][0]["parts"][0]["text"] == get_grounding_prompt("v2-strict")
         assert body["contents"][-1] == {"role": "user", "parts": [{"text": "판정 입력"}]}
 
         gen_config = body["generationConfig"]
@@ -117,7 +118,7 @@ class TestCallGroundingNormal:
         body = json.loads(captured[0].content)
         assert body["contents"][0]["parts"][0]["text"] == "X"
 
-    async def test_default_system_prompt_is_v1(self, mock_gemini):
+    async def test_default_system_prompt_is_v2_strict(self, mock_gemini):
         captured = mock_gemini(lambda req: httpx.Response(
             200, json=_gemini_response('{"is_groundable": true, "confidence": 0.5}')
         ))
@@ -125,7 +126,7 @@ class TestCallGroundingNormal:
         await call_grounding("판정 입력")
 
         body = json.loads(captured[0].content)
-        assert body["contents"][0]["parts"][0]["text"] == provider._GROUNDING_SYSTEM_PROMPT
+        assert body["contents"][0]["parts"][0]["text"] == get_grounding_prompt("v2-strict")
 
     async def test_strips_markdown_code_fence(self, mock_gemini):
         fenced = '```json\n{"is_groundable": true, "confidence": 0.5}\n```'

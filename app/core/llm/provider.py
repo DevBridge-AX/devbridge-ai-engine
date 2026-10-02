@@ -436,11 +436,12 @@ async def call_rewrite(
         )
 
 
+# v1 원문 별칭(원문 해시 회귀 테스트용). 기본 프롬프트는 _default_grounding_prompt()가 settings로 결정
 _GROUNDING_SYSTEM_PROMPT = GROUNDING_PROMPT_V1
 
 
 def _default_grounding_prompt(settings) -> str:
-    return get_grounding_prompt(getattr(settings, "grounding_prompt_version", "v1"))
+    return get_grounding_prompt(getattr(settings, "grounding_prompt_version", "v2-strict"))
 
 
 _GROUNDING_MAX_TOKENS = 64

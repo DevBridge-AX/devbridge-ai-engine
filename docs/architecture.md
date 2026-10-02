@@ -234,11 +234,12 @@ is_groundable / confidence (LLM structured output, 최종 판단)
 임계치 비교 및 UC-04 알림 트리거는 Spring의 책임이며, 이 레포는 산출된 값만
 반환합니다.
 
-2차 판정(LLM) 관련 설정(`.env`, 기본값은 현행 동작과 동일):
+2차 판정(LLM) 관련 설정(`.env`, 기본값은 v2-strict / top-3이며 `v1` / `5`로 설정하면 이전 동작으로
+복원됩니다. 근거: `docs/grounding-eval.md` 2회차):
 
-- `GROUNDING_PROMPT_VERSION=v1` — 판정 시스템 프롬프트 버전(`v1` | `v2-strict`,
+- `GROUNDING_PROMPT_VERSION=v2-strict` — 판정 시스템 프롬프트 버전(`v1` | `v2-strict`,
   `app/core/rag/grounding_prompts.py`). 잘못된 값은 기동 시 검증 오류가 됩니다.
-- `GROUNDING_JUDGE_TOP_K=5` — 판정 프롬프트에 넣는 청크 수(1 이상, retrieve
+- `GROUNDING_JUDGE_TOP_K=3` — 판정 프롬프트에 넣는 청크 수(1 이상, retrieve
   top_k와 별개).
 - `GROUNDING_JUDGE_MAX_CHUNK_CHARS=0` — 0이면 제한 없음, 양수면 판정 프롬프트의
   청크 content를 해당 길이로 자르고 `…(생략)`을 붙입니다.
