@@ -197,6 +197,24 @@ python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-{timesta
 캐시 레코드에는 `variant`, `prompt_chars` 필드가 추가되며, `variant`가 없는 기존(A4)
 캐시는 `baseline`으로 읽습니다.
 
+### 반복 측정 (`--repeat`, L4)
+
+LLM 판정(flash-lite)은 비결정적이고 검색은 결정적입니다. strict_top3의 정확도(예: 92.5%)가
+재현되는지 보려면 `--live`에 `--repeat N`을 줍니다(N >= 1, 기본 1, `--live` 전용).
+
+```bash
+RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline,strict_top3 --repeat 2
+```
+
+- 케이스당 검색은 1회, 변형마다 판정을 N번 호출합니다. **LLM 호출 수 = 케이스 수 x 변형 수 x N**
+  (비용 N배; 예: 40 x 2 x 2 = 160회).
+- 캐시 레코드에 `repeat`(0-based) 필드가 추가됩니다. 없는 구 캐시는 repeat 0으로 읽습니다.
+- 리포트: repeat가 1개면 기존 출력과 동일합니다. 2개 이상이면 기존 섹션(스윕/변형 비교)은
+  케이스 id 단위 집계라 repeat 0 레코드만 사용하고(리포트에 명시), 끝에 `# 반복 측정` 섹션을
+  덧붙입니다: variant별 accuracy / not-gr recall / F1 / groundable 오차단의 mean±sd(표본
+  표준편차, accuracy는 min~max 포함)와, repeat 간 최종 판정이 달라진 케이스(flip rate, ids).
+- 반복 측정의 임계치는 변형 비교와 같이 `settings.grounding_similarity_threshold`(`--threshold`로 override)입니다.
+
 ### 출력 표
 
 - baseline 임계치 스윕(기존과 동일)
