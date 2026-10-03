@@ -90,6 +90,24 @@ RUN_LIVE_LLM=1 uv run --extra dev python -m pytest -m live -q tests/live/test_se
 결과는 터미널 출력과 `data/live_runs/*.json`의 `persona_answers_preview.semantic_cache`에 남습니다.
 paraphrase 적중 여부는 단언하지 않고 기록만 합니다(miss 시 `cache_similarity`는 metrics에 기록되지 않아 null).
 
+#### 라이브 측정 2회차(재검증 on) 방법
+
+재검증 경로(후보 구간 0.80~0.95 paraphrase -> LLM 재검증 YES -> hit)의 지연/토큰은
+`test_semantic_cache_verify_path`가 측정합니다. 전용 fixture가 `SEMANTIC_CACHE_ENABLED=true`,
+`SEMANTIC_CACHE_VERIFY_ENABLED=true`, `SEMANTIC_CACHE_CANDIDATE_THRESHOLD=0.80`(프롬프트 v2, 임계치 0.95)을
+설정하고 시작/종료 시 캐시를 비웁니다. 오프라인 2회차에서 후보 구간 YES였던 p004, p007, p008, p015~p018과
+NO 사례 p011의 q1을 miss로 시드한 뒤 q2를 요청합니다. 호출 예산은 main/grounding 각 8회 + q2 miss 건수,
+재검증은 q2 8회(+ q1끼리 후보 구간에 든 경우)입니다. q1 단계에서 hit 된 쌍은 `phase1_cache_hits`로 기록하고 비교에서 제외합니다.
+
+```bash
+RUN_LIVE_LLM=1 uv run --extra dev python -m pytest -m live -q tests/live/test_semantic_cache_live.py -k verify
+```
+
+결과는 `persona_answers_preview.semantic_cache_verify`에 남으며 쌍별 유사도/재검증 결과, hit 경로
+total_ms p50/p95, verify_ms, 요청당 평균 LLM 토큰, 재검증 호출당 평균 토큰(llm_calls의
+`purpose="cache_verify"`, token_usage에는 포함되지 않음), `meets_l6`(hit 경로 total_ms p50 <= 2000)을 포함합니다.
+단언은 불변식만 다루며 hit/miss 결과는 실패 조건이 아닙니다.
+
 ## 결과
 
 아래 모든 수치는 실험 환경(코퍼스 4문서, 40쌍) 기준입니다.
