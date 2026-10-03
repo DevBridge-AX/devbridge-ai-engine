@@ -20,13 +20,27 @@ content(원문)는 불변이며, 모델 교체 시 이 모듈만 재호출하면
   1개 카운트이며 텍스트 건별 값이 아님). 메트릭(embedding_provider_tokens)
   기록에만 사용되며, usage_logs에는 반영하지 않습니다. 배치 중 하나라도
   usageMetadata가 없으면 부분합은 의미가 없으므로 전체를 None으로 둡니다.
+
+taskType (선택):
+- embed_texts(task_type=...)를 주면 각 요청 객체에 "taskType"을 추가합니다. None(기본)이면
+  요청 본문에 taskType 필드를 넣지 않아 기존 동작과 동일합니다.
+- 질의 측 호출부는 query_embed_kwargs()로 settings.embedding_query_task_type을 전달합니다
+  (설정이 None이면 인자를 아예 넘기지 않음). 문서 인덱싱 호출부는 taskType을 쓰지 않습니다.
 """
 
 from dataclasses import dataclass
 
 import httpx
 
-from app.config import get_settings
+from app.config import EMBEDDING_TASK_TYPES, EmbeddingTaskType, get_settings
+
+__all__ = [
+    "EMBEDDING_TASK_TYPES",
+    "EmbeddingTaskType",
+    "EmbedResult",
+    "embed_texts",
+    "query_embed_kwargs",
+]
 
 _BATCH_SIZE = 100  # batchEmbedContents 최대 100건
 
@@ -43,15 +57,28 @@ class EmbedResult:
     # 실측: batchEmbedContents 응답 usageMetadata.promptTokenCount를 배치별로
     # 합산한 값(요청 1건당 1개 카운트). 배치 중 하나라도 값이 없으면 None.
     provider_tokens: int | None = None
+    # 요청에 사용한 taskType(없으면 None = 요청 본문에 taskType 미포함).
+    task_type: str | None = None
 
 
-async def embed_texts(texts: list[str]) -> EmbedResult:
+def query_embed_kwargs() -> dict[str, str]:
+    """질의 측 embed_texts 호출용 kwargs. 설정이 None이면 빈 dict(인자를 넘기지 않음)."""
+    task_type = get_settings().embedding_query_task_type
+    return {} if task_type is None else {"task_type": task_type}
+
+
+async def embed_texts(texts: list[str], task_type: str | None = None) -> EmbedResult:
     """텍스트 목록에 대한 임베딩 벡터를 생성합니다.
 
     100건 초과 시 내부적으로 배치 분할하여 처리합니다.
+    task_type이 주어지면 각 요청에 taskType을 추가하며, 허용 값이 아니면 ValueError입니다.
     """
     if not texts:
         raise ValueError("embed_texts: texts must not be empty")
+    if task_type is not None and task_type not in EMBEDDING_TASK_TYPES:
+        raise ValueError(
+            f"embed_texts: unknown task_type {task_type!r} (allowed: {', '.join(EMBEDDING_TASK_TYPES)})"
+        )
 
     settings = get_settings()
     url = f"{settings.gemini_base_url}/models/{settings.embedding_model}:batchEmbedContents"
@@ -69,7 +96,11 @@ async def embed_texts(texts: list[str]) -> EmbedResult:
         batch = texts[i : i + _BATCH_SIZE]
         body = {
             "requests": [
-                {"model": model_path, "content": {"parts": [{"text": t}]}}
+                {
+                    "model": model_path,
+                    "content": {"parts": [{"text": t}]},
+                    **({"taskType": task_type} if task_type is not None else {}),
+                }
                 for t in batch
             ]
         }
@@ -96,4 +127,5 @@ async def embed_texts(texts: list[str]) -> EmbedResult:
         embedding_model_version=settings.embedding_model_version,
         total_tokens=len(texts) * settings.embedding_tokens_per_text,
         provider_tokens=provider_tokens_sum if provider_tokens_complete else None,
+        task_type=task_type,
     )

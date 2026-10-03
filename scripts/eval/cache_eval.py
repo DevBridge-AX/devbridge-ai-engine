@@ -28,13 +28,18 @@ false_hit_rate(다른 질문을 hit = 오답)를 스윕해 권고 임계치를 �
     RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify --verify-prompt-version v1,v2
     RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify --verify-prompt-version v1,v2 --dataset scripts/eval/datasets/cache_pairs_holdout.jsonl
 
+    # 1-d) 임베딩 taskType 실험 — q1/q2를 taskType을 붙여 임베딩합니다(문서 인덱싱과 무관한
+    #      쌍별 유사도 비교용). 운영 설정 EMBEDDING_QUERY_TASK_TYPE 변경 전 홀드아웃으로 먼저 평가하세요.
+    RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --task-type SEMANTIC_SIMILARITY --dataset scripts/eval/datasets/cache_pairs_holdout.jsonl
+
     # 2) 오프라인 스윕 (API 호출 없음) — 캐시된 유사도로 임계치 0.85~0.99를 스윕합니다.
     #    verify 필드가 있는 캐시면 "임계치 + LLM 재검증" 스윕 섹션이 추가됩니다.
     python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-20260930-120000.jsonl
     python3 scripts/eval/cache_eval.py --from-cache <file> --direct-threshold 0.95
 
 캐시 레코드 스키마(jsonl 1줄 = 질문 쌍 1건):
-    {id, kind, q1, q2, similarity, embedding_model}
+    {id, kind, q1, q2, similarity, embedding_model, embedding_task_type}
+    (embedding_task_type은 --task-type 사용 시 해당 값, 미사용이면 null. 구버전 캐시엔 필드가 없어도 읽습니다.)
     --verify 수집 시 추가: {verify_outcome, verify_same, verify_latency_ms,
     verify_prompt_tokens, verify_completion_tokens, verify_model, verify_prompt_version}
     (verify 필드가 없는 구버전 캐시도 그대로 읽습니다.)
@@ -53,6 +58,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from app.config import EMBEDDING_TASK_TYPES
 from scripts.eval.cache_eval_metrics import (
     DEFAULT_DIRECT_THRESHOLD,
     cosine_similarity,
@@ -88,6 +94,7 @@ async def _collect_records(
     limit: int | None,
     verify: bool = False,
     prompt_versions: list[str] | None = None,
+    task_type: str | None = None,
 ) -> list[dict]:
     """모든 q1/q2를 한 번의 embed_texts 호출로 임베딩하고 쌍별 코사인 유사도를 계산합니다.
 
@@ -95,6 +102,8 @@ async def _collect_records(
     결과를 레코드에 함께 저장합니다(후보 임계치를 오프라인에서 스윕하기 위함).
     prompt_versions가 여러 개면 쌍마다 버전별로 검증해 (쌍, 버전)당 레코드 1건을 씁니다
     (유사도는 한 번만 계산해 복사, LLM 호출 = 쌍 수 x 버전 수).
+
+    task_type이 주어지면 embed_texts에 전달하고 각 레코드에 embedding_task_type으로 기록합니다.
 
     RUN_LIVE_LLM 게이트는 호출부(main)의 책임입니다.
     """
@@ -111,7 +120,7 @@ async def _collect_records(
         texts.append(pair["q1"])
         texts.append(pair["q2"])
 
-    result = await embed_texts(texts)
+    result = await embed_texts(texts, task_type=task_type)
 
     records = []
     for i, pair in enumerate(pairs):
@@ -125,6 +134,7 @@ async def _collect_records(
                     result.embeddings[2 * i], result.embeddings[2 * i + 1]
                 ),
                 "embedding_model": result.embedding_model,
+                "embedding_task_type": task_type,
             }
         )
     if not verify:
@@ -187,7 +197,14 @@ def _embedding_report(records: list[dict]) -> str:
         "false hit 2% 이하 허용": recommend_threshold(rows, max_false_hit_rate=0.02),
     }
     models = sorted({r["embedding_model"] for r in records if r.get("embedding_model")})
-    return render_markdown(records, rows, recommendations, embedding_model=", ".join(models) or "-")
+    task_types = sorted({r["embedding_task_type"] for r in records if r.get("embedding_task_type")})
+    return render_markdown(
+        records,
+        rows,
+        recommendations,
+        embedding_model=", ".join(models) or "-",
+        embedding_task_type=", ".join(task_types) or None,
+    )
 
 
 def _report_multi_version(records: list[dict], direct_threshold: float) -> str:
@@ -239,6 +256,13 @@ def main(argv: list[str] | None = None) -> int:
         "SEMANTIC_CACHE_VERIFY_PROMPT_VERSION 설정값.",
     )
     parser.add_argument(
+        "--task-type",
+        choices=EMBEDDING_TASK_TYPES,
+        default=None,
+        help="--collect와 함께 사용: 임베딩 요청에 Gemini taskType을 추가합니다(예: SEMANTIC_SIMILARITY). "
+        "기본: 미지정(taskType 미전송, 현행 동작).",
+    )
+    parser.add_argument(
         "--direct-threshold",
         type=float,
         default=DEFAULT_DIRECT_THRESHOLD,
@@ -278,6 +302,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.verify and not args.collect:
         parser.error("--verify는 --collect와 함께만 사용할 수 있습니다.")
 
+    if args.task_type is not None and not args.collect:
+        parser.error("--task-type은 --collect와 함께만 사용할 수 있습니다.")
+
     versions: list[str] | None = None
     if args.verify_prompt_version is not None:
         if not args.verify:
@@ -307,7 +334,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        records = asyncio.run(_collect_records(args.dataset, args.limit, args.verify, versions))
+        records = asyncio.run(
+            _collect_records(args.dataset, args.limit, args.verify, versions, task_type=args.task_type)
+        )
 
         out_path = args.out
         if out_path is None:

@@ -412,3 +412,58 @@ def test_cli_verify_prompt_version_validation(capsys):
     with pytest.raises(SystemExit):
         main(["--collect", "--verify", "--verify-prompt-version", "v1,v3"])
     assert "알 수 없는 검증 프롬프트 버전" in capsys.readouterr().err
+
+
+# --- 임베딩 taskType (--task-type) ---------------------------------------------
+
+
+def test_render_markdown_shows_task_type_only_when_given():
+    records = _records()
+    rows = sweep(records)
+    with_tt = render_markdown(records, rows, {}, embedding_model="m", embedding_task_type="SEMANTIC_SIMILARITY")
+    assert "- 임베딩 모델: m (taskType: SEMANTIC_SIMILARITY)" in with_tt
+    without = render_markdown(records, rows, {}, embedding_model="m")
+    assert "- 임베딩 모델: m\n" in without and "taskType" not in without
+
+
+def test_cache_eval_cli_task_type_requires_collect(capsys):
+    from scripts.eval import cache_eval
+
+    with pytest.raises(SystemExit):
+        cache_eval.main(["--task-type", "SEMANTIC_SIMILARITY"])
+    assert "--task-type" in capsys.readouterr().err
+
+
+def test_collect_records_stores_task_type(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.core.embeddings import embedder
+    from scripts.eval import cache_eval
+
+    calls = []
+
+    async def fake_embed(texts, task_type=None):
+        calls.append(task_type)
+        return SimpleNamespace(embeddings=[[1.0, 0.0]] * len(texts), embedding_model="fake-model")
+
+    monkeypatch.setattr(embedder, "embed_texts", fake_embed)
+
+    records = asyncio.run(cache_eval._collect_records(_DATASET, 2, task_type="SEMANTIC_SIMILARITY"))
+    assert calls == ["SEMANTIC_SIMILARITY"]
+    assert {r["embedding_task_type"] for r in records} == {"SEMANTIC_SIMILARITY"}
+    assert "(taskType: SEMANTIC_SIMILARITY)" in cache_eval._embedding_report(records)
+
+    records = asyncio.run(cache_eval._collect_records(_DATASET, 2))
+    assert calls[-1] is None
+    assert {r["embedding_task_type"] for r in records} == {None}
+    assert "taskType" not in cache_eval._embedding_report(records)
+
+
+def test_old_records_without_task_type_render_as_before():
+    from scripts.eval import cache_eval
+
+    records = [{**r, "embedding_model": "old-model"} for r in _records()]
+    report = cache_eval._embedding_report(records)
+    assert "- 임베딩 모델: old-model\n" in report
+    assert "taskType" not in report

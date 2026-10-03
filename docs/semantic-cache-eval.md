@@ -55,6 +55,18 @@ RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --limit 5   # 스모
 python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-{YYYYMMDD-HHMMSS}.jsonl
 ```
 
+`--task-type`(`--collect` 전용)으로 임베딩 요청에 Gemini `taskType`을 붙여 수집할 수 있습니다
+(L3 실험, 기본은 미전송). 레코드에 `embedding_task_type`이 기록되고 리포트 실험 조건에
+`임베딩 모델: ... (taskType: ...)`로 표시됩니다. 구버전 캐시(필드 없음)도 그대로 읽힙니다.
+
+```bash
+RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --task-type SEMANTIC_SIMILARITY \
+  --dataset scripts/eval/datasets/cache_pairs_holdout.jsonl
+```
+
+운영 설정 `EMBEDDING_QUERY_TASK_TYPE`은 이 평가로 유사도 분포와 임계치를 재확인한 뒤에만 바꿉니다
+(문서는 taskType 없이 인덱싱되어 있어 질의 측만 바꾸면 검색 유사도 분포가 달라질 수 있음).
+
 결과는 `data/eval/cache-{YYYYMMDD-HHMMSS}.jsonl`(`data/`는 `.gitignore` 대상)에 저장되며,
 스윕 출력에는 유사도 분포, 임계치별 지표, 권고 임계치, 경계 사례가 포함됩니다.
 
