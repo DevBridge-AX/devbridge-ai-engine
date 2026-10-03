@@ -22,18 +22,26 @@ LLM 2차 판정을 라벨셋(scripts/eval/datasets/grounding_cases.jsonl)으로 
     #      --variants 기본값은 VARIANTS 전체(baseline,strict,top3,strict_top3,strict_top3_cap).
     RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline,strict
 
+    # 1-c) 재현성 측정(L4) — 변형마다 판정을 N번 반복. 검색은 케이스당 1회(결정적),
+    #      LLM 호출 수 = 케이스 수 x 변형 수 x N (비용 N배). --live에서만 사용 가능.
+    #      예: 40케이스 x 2변형 x 2회 = 160회.
+    RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline,strict_top3 --repeat 2
+
     # 2) 오프라인 스윕 (API 호출 없음) — 캐시된 결과로 임계치 0.20~0.60을 스윕합니다.
     #    캐시에 변형이 여러 개면 baseline 스윕에 더해 변형 비교 표(임계치 기본값은
     #    settings.grounding_similarity_threshold, --threshold로 override)와 변형 간 판정이
     #    갈린 케이스 표를 출력합니다. variant 필드가 없는 레코드(A4 캐시)는 baseline입니다.
+    #    캐시에 repeat가 2개 이상이면 위 섹션은 repeat 0 레코드만 쓰고, 끝에 반복 측정
+    #    섹션(variant별 mean±sd/min~max, 판정 불안정 케이스)을 덧붙입니다.
     python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-20260930-120000.jsonl
     python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-....jsonl --threshold 0.35
 
 캐시 레코드 스키마(jsonl 1줄 = 케이스x변형 1건):
     {variant, id, category, expected_groundable, top_similarity, llm_is_groundable,
      llm_confidence, parse_ok, fallback_reason, latency_ms, prompt_tokens,
-     completion_tokens, prompt_chars}
-    (variant/prompt_chars는 G1에서 추가된 필드이며 없어도 로드됩니다.)
+     completion_tokens, prompt_chars, repeat}
+    (variant/prompt_chars는 G1, repeat(0-based 반복 인덱스)는 L4에서 추가된 필드이며
+     없어도 로드됩니다. repeat가 없는 레코드는 repeat 0으로 취급합니다.)
 
 fail-open 반영: app/core/rag/grounding.py::assess()는 call_grounding 예외
 ("llm_error") 또는 파싱 실패("parse_error") 시 is_groundable=True로 fail-open
@@ -46,6 +54,7 @@ fallback_reason만 남음). compute_metrics()는 이 fallback 레코드를 실�
 import argparse
 import asyncio
 import json
+import statistics
 import sys
 import tempfile
 import time
@@ -402,6 +411,115 @@ def render_variant_markdown(records_by_variant: dict[str, list[dict]], threshold
     return "\n".join(lines).rstrip() + "\n"
 
 
+def group_by_repeat(records: list[dict]) -> dict[int, list[dict]]:
+    """레코드를 repeat 인덱스별로 묶습니다. repeat 필드가 없는 레코드(구 캐시)는 0입니다."""
+    grouped: dict[int, list[dict]] = {}
+    for record in records:
+        grouped.setdefault(int(record.get("repeat") or 0), []).append(record)
+    return dict(sorted(grouped.items()))
+
+
+_REPEAT_METRICS = (
+    "accuracy",
+    "recall",
+    "f1",
+    "groundable_false_block_rate",
+    "mean_prompt_tokens",
+    "mean_latency_ms",
+    "parse_failure_rate",
+)
+
+
+def _summarize(values: list[float | None]) -> dict:
+    """None을 제외한 값들의 mean/표본 stdev(n<2면 None)/min/max."""
+    vals = [v for v in values if v is not None]
+    return {
+        "n": len(vals),
+        "mean": statistics.fmean(vals) if vals else None,
+        "stdev": statistics.stdev(vals) if len(vals) >= 2 else None,
+        "min": min(vals) if vals else None,
+        "max": max(vals) if vals else None,
+    }
+
+
+def compute_repeat_stats(records: list[dict], threshold: float) -> dict:
+    """variant별로 repeat마다 지표를 계산해 repeat 간 mean/stdev/min/max와 판정 안정성을 구합니다.
+
+    순수 함수(API 호출 없음). compute_variant_comparison과 같은 지표 정의를 쓴다.
+
+    Returns:
+        {"threshold": float, "variants": {name: {
+            "repeats": int,                  # 해당 variant의 distinct repeat 수
+            "n": int,                        # 케이스 수(distinct id)
+            "metrics": {accuracy|recall|f1|groundable_false_block_rate|mean_prompt_tokens|
+                        mean_latency_ms|parse_failure_rate: {n, mean, stdev, min, max}},
+            "unstable_case_ids": [str], "flip_rate": float | None,
+        }}}
+    stdev는 표본 표준편차(repeat 1개면 None). 불안정 케이스 = 해당 케이스의 repeat들 사이에서
+    최종 판정(_final_decision)이 하나라도 다른 케이스이며, 그 케이스에 존재하는 repeat만 비교한다.
+    """
+    variants: dict[str, dict] = {}
+    for name, v_records in group_by_variant(records).items():
+        per_repeat: dict[str, list[float | None]] = {k: [] for k in _REPEAT_METRICS}
+        for rep_records in group_by_repeat(v_records).values():
+            m = compute_metrics(rep_records, threshold)
+            groundable = [r for r in rep_records if bool(r["expected_groundable"])]
+            fb = sum(1 for r in groundable if not _final_decision(r, threshold))
+            per_repeat["accuracy"].append(m["accuracy"])
+            per_repeat["recall"].append(m["not_groundable"]["recall"])
+            per_repeat["f1"].append(m["not_groundable"]["f1"])
+            per_repeat["groundable_false_block_rate"].append(fb / len(groundable) if groundable else None)
+            per_repeat["mean_prompt_tokens"].append(m["mean_prompt_tokens"])
+            per_repeat["mean_latency_ms"].append(m["mean_latency_ms"])
+            per_repeat["parse_failure_rate"].append(m["parse_failure_rate"])
+
+        decisions: dict[str, set[bool]] = {}
+        for r in v_records:
+            decisions.setdefault(str(r["id"]), set()).add(_final_decision(r, threshold))
+        unstable = [cid for cid, d in decisions.items() if len(d) > 1]
+        variants[name] = {
+            "repeats": len(group_by_repeat(v_records)),
+            "n": len(decisions),
+            "metrics": {k: _summarize(v) for k, v in per_repeat.items()},
+            "unstable_case_ids": unstable,
+            "flip_rate": (len(unstable) / len(decisions)) if decisions else None,
+        }
+    return {"threshold": threshold, "variants": variants}
+
+
+def render_repeat_markdown(records: list[dict], threshold: float) -> str:
+    """반복 측정 결과(repeat 간 mean±sd, 판정 불안정 케이스)를 markdown으로 렌더링합니다(순수 함수)."""
+    stats = compute_repeat_stats(records, threshold)
+    n_repeats = len(group_by_repeat(records))
+    lines = [
+        f"# 반복 측정 ({n_repeats}회, threshold {threshold:.2f})",
+        "",
+        "mean±sd는 repeat 간 표본 표준편차, 괄호는 min~max. 검색은 결정적이므로 변동은 LLM 판정에서 옵니다.",
+        "",
+        "| variant | n | accuracy mean±sd (min~max) | not-gr recall mean±sd "
+        "| not-gr F1 mean±sd | groundable 오차단 mean±sd | 판정 불안정 케이스 (flip rate, ids) |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+
+    def ms(s: dict) -> str:
+        if s["mean"] is None:
+            return "-"
+        sd = "-" if s["stdev"] is None else _fmt(s["stdev"])
+        return f"{_fmt(s['mean'])}±{sd}"
+
+    for name, v in stats["variants"].items():
+        m = v["metrics"]
+        acc = m["accuracy"]
+        acc_cell = ms(acc) + (f" ({_fmt(acc['min'])}~{_fmt(acc['max'])})" if acc["mean"] is not None else "")
+        ids = ", ".join(v["unstable_case_ids"]) if v["unstable_case_ids"] else "없음"
+        lines.append(
+            f"| {name} | {v['n']} | {acc_cell} | {ms(m['recall'])} | {ms(m['f1'])} | "
+            f"{ms(m['groundable_false_block_rate'])} | "
+            f"{len(v['unstable_case_ids'])}/{v['n']} ({_fmt(v['flip_rate'])}): {ids} |"
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _fmt(value: float | None, pct: bool = True) -> str:
     if value is None:
         return "-"
@@ -448,16 +566,38 @@ def render_sweep_markdown(records: list[dict], thresholds: list[float] | None = 
 
 
 def render_report(records: list[dict], threshold: float | None = None) -> str:
-    """임계치 스윕(baseline 또는 유일한 variant)과, variant가 여러 개면 변형 비교 표를 합쳐 렌더링합니다."""
-    grouped = group_by_variant(records)
-    if len(grouped) <= 1:
-        return render_sweep_markdown(records)
-    if threshold is None:
+    """임계치 스윕(baseline 또는 유일한 variant)과, variant가 여러 개면 변형 비교 표를 합쳐 렌더링합니다.
+
+    캐시에 repeat가 2개 이상이면 기존 섹션은 케이스 id 단위 집계라 중복 집계되지 않도록
+    repeat 0 레코드만 사용하고, 마지막에 반복 측정 섹션을 덧붙입니다.
+    """
+    repeat_groups = group_by_repeat(records)
+    multi_repeat = len(repeat_groups) > 1
+    base_records = repeat_groups[min(repeat_groups)] if multi_repeat else records
+
+    if multi_repeat and threshold is None:
         from app.config import get_settings
 
         threshold = get_settings().grounding_similarity_threshold
-    sweep_records = grouped.get("baseline") or next(iter(grouped.values()))
-    return render_sweep_markdown(sweep_records) + "\n" + render_variant_markdown(grouped, threshold)
+
+    grouped = group_by_variant(base_records)
+    if len(grouped) <= 1:
+        text = render_sweep_markdown(base_records)
+    else:
+        if threshold is None:
+            from app.config import get_settings
+
+            threshold = get_settings().grounding_similarity_threshold
+        sweep_records = grouped.get("baseline") or next(iter(grouped.values()))
+        text = render_sweep_markdown(sweep_records) + "\n" + render_variant_markdown(grouped, threshold)
+
+    if not multi_repeat:
+        return text
+    note = (
+        f"> 반복 {len(repeat_groups)}회 캐시: 위 섹션은 repeat 0 레코드만 사용합니다"
+        "(케이스 id 단위 집계). 전체 repeat 통계는 아래 반복 측정 섹션을 보세요.\n"
+    )
+    return text + "\n" + note + "\n" + render_repeat_markdown(records, threshold)
 
 
 # ---------------------------------------------------------------------------
@@ -465,10 +605,17 @@ def render_report(records: list[dict], threshold: float | None = None) -> str:
 # ---------------------------------------------------------------------------
 
 async def _collect_records(
-    dataset_path: Path, limit: int | None, variant_names: list[str] | None = None
+    dataset_path: Path,
+    limit: int | None,
+    variant_names: list[str] | None = None,
+    repeat: int = 1,
 ) -> list[dict]:
     """tmp 워크스페이스를 시드하고 케이스마다 retrieve + (임계치 무관) call_grounding을
     호출해 결과 레코드를 만듭니다. RUN_LIVE_LLM 게이트는 호출부(main)의 책임입니다.
+
+    repeat > 1이면 케이스당 검색은 1회만(결정적) 하고, 변형마다 판정을 repeat번 호출해
+    LLM 비결정성에 따른 재현성을 잰다(레코드의 "repeat" 필드 = 0-based 반복 인덱스).
+    LLM 호출 수 = 케이스 수 x 변형 수 x repeat.
 
     tests/live/conftest.py::live_env/seeded_workspace와 동일한 패턴(tmp
     VECTOR_STORE_PATH/METRICS_DIR + get_settings/get_vector_store 캐시 초기화)을
@@ -523,54 +670,56 @@ async def _collect_records(
                         max_chunk_chars=cfg["max_chunk_chars"],
                     )
 
-                    start = time.perf_counter()
-                    llm_is_groundable = None
-                    llm_confidence = None
-                    prompt_tokens = None
-                    completion_tokens = None
-                    parse_ok = True
-                    fallback_reason = None
-                    error_type = None
-                    try:
-                        raw, usage = await llm.call_grounding(
-                            prompt, system_prompt=get_grounding_prompt(cfg["prompt_version"])
-                        )
-                    except Exception as exc:
-                        parse_ok = False
-                        fallback_reason = "llm_error"
-                        error_type = f"{type(exc).__name__}: {exc}"[:200]
-                        print(f"[{variant_name}/{case['id']}] call_grounding 실패: {error_type}", file=sys.stderr)
-                    else:
-                        prompt_tokens = usage.prompt_tokens
-                        completion_tokens = usage.completion_tokens
-                        is_g = raw.get("is_groundable")
-                        conf = raw.get("confidence")
-                        if is_g is None or conf is None:
+                    for repeat_idx in range(repeat):
+                        start = time.perf_counter()
+                        llm_is_groundable = None
+                        llm_confidence = None
+                        prompt_tokens = None
+                        completion_tokens = None
+                        parse_ok = True
+                        fallback_reason = None
+                        error_type = None
+                        try:
+                            raw, usage = await llm.call_grounding(
+                                prompt, system_prompt=get_grounding_prompt(cfg["prompt_version"])
+                            )
+                        except Exception as exc:
                             parse_ok = False
-                            fallback_reason = "parse_error"
+                            fallback_reason = "llm_error"
+                            error_type = f"{type(exc).__name__}: {exc}"[:200]
+                            print(f"[{variant_name}/{case['id']}] call_grounding 실패: {error_type}", file=sys.stderr)
                         else:
-                            llm_is_groundable = bool(is_g)
-                            llm_confidence = float(conf)
-                    latency_ms = (time.perf_counter() - start) * 1000
+                            prompt_tokens = usage.prompt_tokens
+                            completion_tokens = usage.completion_tokens
+                            is_g = raw.get("is_groundable")
+                            conf = raw.get("confidence")
+                            if is_g is None or conf is None:
+                                parse_ok = False
+                                fallback_reason = "parse_error"
+                            else:
+                                llm_is_groundable = bool(is_g)
+                                llm_confidence = float(conf)
+                        latency_ms = (time.perf_counter() - start) * 1000
 
-                    records.append(
-                        {
-                            "variant": variant_name,
-                            "id": case["id"],
-                            "category": case["category"],
-                            "expected_groundable": case["expected_groundable"],
-                            "top_similarity": top_similarity,
-                            "llm_is_groundable": llm_is_groundable,
-                            "llm_confidence": llm_confidence,
-                            "parse_ok": parse_ok,
-                            "fallback_reason": fallback_reason,
-                            "latency_ms": latency_ms,
-                            "prompt_tokens": prompt_tokens,
-                            "completion_tokens": completion_tokens,
-                            "prompt_chars": len(prompt),
-                            "error_type": error_type,
-                        }
-                    )
+                        records.append(
+                            {
+                                "variant": variant_name,
+                                "repeat": repeat_idx,
+                                "id": case["id"],
+                                "category": case["category"],
+                                "expected_groundable": case["expected_groundable"],
+                                "top_similarity": top_similarity,
+                                "llm_is_groundable": llm_is_groundable,
+                                "llm_confidence": llm_confidence,
+                                "parse_ok": parse_ok,
+                                "fallback_reason": fallback_reason,
+                                "latency_ms": latency_ms,
+                                "prompt_tokens": prompt_tokens,
+                                "completion_tokens": completion_tokens,
+                                "prompt_chars": len(prompt),
+                                "error_type": error_type,
+                            }
+                        )
             return records
         finally:
             db.close()
@@ -648,7 +797,19 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="변형 비교 표에 적용할 유사도 임계치 (기본: settings.grounding_similarity_threshold)",
     )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="--live 전용. 변형마다 판정을 N번 반복해 LLM 비결정성(재현성)을 잽니다(N>=1, 기본 1). "
+        "검색은 케이스당 1회. LLM 호출 수 = 케이스 수 x 변형 수 x N (비용 N배).",
+    )
     args = parser.parse_args(argv)
+
+    if args.repeat < 1:
+        parser.error("--repeat는 1 이상이어야 합니다.")
+    if args.repeat != 1 and not args.live:
+        parser.error("--repeat는 --live와 함께만 사용할 수 있습니다.")
 
     if args.live and args.from_cache:
         parser.error("--live와 --from-cache는 동시에 지정할 수 없습니다.")
@@ -672,7 +833,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        records = asyncio.run(_collect_records(args.dataset, args.limit, variant_names))
+        records = asyncio.run(_collect_records(args.dataset, args.limit, variant_names, args.repeat))
 
         out_path = args.out
         if out_path is None:
