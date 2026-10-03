@@ -10,8 +10,11 @@ import pytest
 from scripts.eval.grounding_eval import (
     VARIANTS,
     compute_metrics,
+    compute_repeat_stats,
     compute_variant_comparison,
+    group_by_repeat,
     group_by_variant,
+    render_repeat_markdown,
     render_report,
     render_sweep_markdown,
     render_variant_markdown,
@@ -376,3 +379,185 @@ def test_render_report_multi_variant_includes_both():
     text = render_report(records, threshold=0.35)
     assert "임계치 스윕" in text
     assert "변형 비교" in text
+
+
+# ---------------------------------------------------------------------------
+# 반복 측정 (L4, --repeat)
+# ---------------------------------------------------------------------------
+
+def _rep(rec: dict, repeat: int | None, variant: str = "baseline") -> dict:
+    out = {**rec, "variant": variant}
+    if repeat is not None:
+        out["repeat"] = repeat
+    return out
+
+
+def _repeat_records():
+    """케이스 4건 x 3회. g2만 repeat 1에서 판정이 뒤집힘(True->False)."""
+    records = []
+    for rep in range(3):
+        records += [
+            _rep(_record(id="g1", expected_groundable=True, llm_is_groundable=True), rep),
+            _rep(_record(id="g2", expected_groundable=True, llm_is_groundable=(rep != 1)), rep),
+            _rep(_record(id="n1", category="project_unanswerable", expected_groundable=False,
+                         llm_is_groundable=False), rep),
+            _rep(_record(id="n2", category="project_unanswerable", expected_groundable=False,
+                         llm_is_groundable=False), rep),
+        ]
+    return records
+
+
+def test_group_by_repeat_missing_field_is_zero():
+    grouped = group_by_repeat([_record(id="a"), {**_record(id="b"), "repeat": 1}, {**_record(id="c"), "repeat": None}])
+    assert sorted(grouped) == [0, 1]
+    assert [r["id"] for r in grouped[0]] == ["a", "c"]
+
+
+def test_compute_repeat_stats_mean_stdev_min_max():
+    stats = compute_repeat_stats(_repeat_records(), 0.35)
+    v = stats["variants"]["baseline"]
+    assert v["repeats"] == 3 and v["n"] == 4
+    acc = v["metrics"]["accuracy"]
+    # repeat별 정확도: 1.0, 0.75, 1.0
+    assert acc["mean"] == pytest.approx((1.0 + 0.75 + 1.0) / 3)
+    assert acc["stdev"] == pytest.approx(statistics_stdev([1.0, 0.75, 1.0]))
+    assert acc["min"] == 0.75 and acc["max"] == 1.0
+    fb = v["metrics"]["groundable_false_block_rate"]
+    assert fb["min"] == 0.0 and fb["max"] == 0.5  # repeat 1에서 g2 오차단 1/2
+    # not-gr recall은 n1,n2 모두 항상 맞아 1.0
+    assert v["metrics"]["recall"]["mean"] == 1.0 and v["metrics"]["recall"]["stdev"] == 0.0
+
+
+def statistics_stdev(values):
+    import statistics
+
+    return statistics.stdev(values)
+
+
+def test_compute_repeat_stats_single_repeat_stdev_none():
+    records = [_rep(r, None) for r in _variant_data()["baseline"]]
+    v = compute_repeat_stats(records, 0.35)["variants"]["baseline"]
+    assert v["repeats"] == 1
+    assert v["metrics"]["accuracy"]["stdev"] is None
+    assert v["metrics"]["accuracy"]["mean"] == v["metrics"]["accuracy"]["min"] == v["metrics"]["accuracy"]["max"]
+    assert v["unstable_case_ids"] == [] and v["flip_rate"] == 0.0
+
+
+def test_compute_repeat_stats_flip_detection():
+    v = compute_repeat_stats(_repeat_records(), 0.35)["variants"]["baseline"]
+    assert v["unstable_case_ids"] == ["g2"]
+    assert v["flip_rate"] == pytest.approx(0.25)
+
+
+def test_compute_repeat_stats_flip_uses_threshold_and_present_repeats_only():
+    # 낮은 유사도 케이스는 LLM 값이 흔들려도 1차 필터로 항상 False -> 안정
+    records = [
+        _rep(_record(id="low", top_similarity=0.1, llm_is_groundable=bool(rep)), rep) for rep in range(2)
+    ]
+    # 일부 repeat에만 존재하는 케이스는 있는 repeat끼리만 비교(단일 관측이면 불안정 아님)
+    records.append(_rep(_record(id="only1", llm_is_groundable=True), 1))
+    v = compute_repeat_stats(records, 0.35)["variants"]["baseline"]
+    assert v["unstable_case_ids"] == []
+    assert v["n"] == 2
+
+
+def test_render_repeat_markdown_contents():
+    text = render_repeat_markdown(_repeat_records(), 0.35)
+    assert text.startswith("# 반복 측정 (3회, threshold 0.35)")
+    assert "±" in text and "g2" in text and "25.0%" in text
+
+
+def test_render_report_repeat_section_only_when_multi_repeat():
+    multi = render_report(_repeat_records(), threshold=0.35)
+    assert "# 반복 측정 (3회" in multi
+    assert "repeat 0 레코드만" in multi
+    assert "케이스 수: 4" in multi  # 스윕은 repeat 0만 -> 12가 아닌 4
+    single = render_report([_rep(r, 0) for r in _variant_data()["baseline"]], threshold=0.35)
+    assert "반복 측정" not in single
+
+
+def test_render_report_single_repeat_identical_to_legacy_cache():
+    legacy = [r for rs in _variant_data().values() for r in rs]  # 구 캐시: variant/repeat 없음
+    legacy_multi = [{**r, "variant": name} for name, rs in _variant_data().items() for r in rs]
+    with_repeat = [{**r, "repeat": 0} for r in legacy_multi]
+    assert render_report(with_repeat, threshold=0.35) == render_report(legacy_multi, threshold=0.35)
+    assert render_report([{**r, "repeat": 0} for r in legacy], threshold=0.35) == render_report(legacy, threshold=0.35)
+    # 구 캐시 출력은 repeat 도입 전과 동일한 섹션 구성(반복 측정 없음)
+    assert "반복 측정" not in render_report(legacy_multi, threshold=0.35)
+
+
+def test_main_rejects_repeat_zero(capsys):
+    from scripts.eval.grounding_eval import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["--live", "--repeat", "0"])
+    assert exc.value.code == 2
+    assert "--repeat" in capsys.readouterr().err
+
+
+def test_main_rejects_repeat_with_from_cache(capsys, tmp_path):
+    from scripts.eval.grounding_eval import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["--from-cache", str(tmp_path / "x.jsonl"), "--repeat", "2"])
+    assert exc.value.code == 2
+    assert "--live" in capsys.readouterr().err
+
+
+def test_collect_records_repeat_retrieves_once_and_judges_n_times(monkeypatch, tmp_path):
+    import asyncio
+    import json
+    from types import SimpleNamespace
+
+    from app.config import get_settings
+    from app.core.llm import provider as llm
+    from app.core.rag import retriever
+    from app.db.vector_store import get_vector_store
+    import scripts.eval.seed as seed
+    from scripts.eval.grounding_eval import _collect_records
+
+    dataset = tmp_path / "cases.jsonl"
+    cases = [
+        {"id": "c1", "category": "project_answerable", "question": "q1", "expected_groundable": True},
+        {"id": "c2", "category": "project_unanswerable", "question": "q2", "expected_groundable": False},
+    ]
+    dataset.write_text("\n".join(json.dumps(c, ensure_ascii=False) for c in cases), encoding="utf-8")
+
+    monkeypatch.setenv("VECTOR_STORE_PATH", str(tmp_path / "unused"))
+    monkeypatch.setenv("METRICS_DIR", str(tmp_path / "unused-m"))
+
+    calls = {"retrieve": 0, "judge": 0}
+
+    class _Db:
+        def close(self):
+            pass
+
+    async def fake_seed(_tmp):
+        return _Db(), "ws-test"
+
+    async def fake_retrieve(question, workspace_id, db, top_k=5):
+        calls["retrieve"] += 1
+        return [SimpleNamespace(similarity_score=0.6, content="c", title="t", source_type="document")]
+
+    async def fake_judge(prompt, *, system_prompt=None):
+        calls["judge"] += 1
+        usage = SimpleNamespace(prompt_tokens=10, completion_tokens=2)
+        return {"is_groundable": calls["judge"] % 2 == 0, "confidence": 0.9}, usage
+
+    monkeypatch.setattr(seed, "seed_workspace_async", fake_seed)
+    monkeypatch.setattr(retriever, "retrieve", fake_retrieve)
+    monkeypatch.setattr(llm, "call_grounding", fake_judge)
+
+    try:
+        records = asyncio.run(_collect_records(dataset, None, ["baseline", "strict_top3"], repeat=2))
+    finally:
+        get_settings.cache_clear()
+        get_vector_store.cache_clear()
+
+    assert calls["retrieve"] == 2  # 케이스당 1회
+    assert calls["judge"] == 2 * 2 * 2  # 케이스 x 변형 x repeat
+    assert len(records) == 8
+    assert sorted({r["repeat"] for r in records}) == [0, 1]
+    assert {(r["variant"], r["id"], r["repeat"]) for r in records} == {
+        (v, c, i) for v in ("baseline", "strict_top3") for c in ("c1", "c2") for i in (0, 1)
+    }
