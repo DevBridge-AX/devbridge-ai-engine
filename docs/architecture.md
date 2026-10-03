@@ -320,6 +320,11 @@ turn 1/2+ : rewritten_query ─► embed ─► cache.lookup ─┬─ hit  ─�
   (`yes`/`no`/`invalid`/`error`/`timeout`)도 hit·miss 양쪽 레코드에 기록되며, 재검증을
   호출하지 않은 요청은 둘 다 `null`입니다.
   `scripts/metrics_report.py`가 hit율, hit/miss별 `total_ms`·`ttft_ms` p50/p95, 재검증 결과 분포·지연·재검증 경유 hit 비율을 보여줍니다.
+- **질의 임베딩 taskType**: `EMBEDDING_QUERY_TASK_TYPE`(기본 비어 있음 = taskType 미전송)을 주면
+  질의 측 임베딩(채팅 질의·시맨틱 캐시·리트리버 질의)에만 Gemini `taskType`을 붙입니다.
+  문서는 taskType 없이 인덱싱되므로 값을 바꾸면 검색 유사도 분포와 캐시 임계치가 달라질 수 있어,
+  `scripts/eval/cache_eval.py --collect --task-type ...`로 평가한 뒤에만 변경합니다
+  (`docs/semantic-cache-eval.md`).
 - **멀티 워커 제한**: 프로세스 메모리 캐시이므로 워커마다 독립이며 인덱싱 무효화가 다른
   워커에는 전파되지 않습니다. 멀티 워커 운영 시 TTL이 stale 허용 상한이 됩니다.
 - **stale 저장 방지(generation)**: `SemanticCache`는 워크스페이스별 generation 카운터를
