@@ -48,7 +48,9 @@ distractor 쌍이다. 기존 `tests/live/fixtures/corpus`와 주제가 겹치지
 - recall@k: 상위 k개 문서(청크가 아닌 문서 단위, 중복 제거) 중 expected 문서 비율
 - hit@1: 1위 문서가 expected에 속하는 비율
 - MRR: expected 중 가장 먼저 나온 문서의 1/rank 평균 (못 찾으면 0)
-- ACL leak: forbidden 문서가 검색 결과에 하나라도 나타난 케이스 수 (0이어야 함)
+- ACL leak: acl_task / acl_restricted 케이스에서 forbidden(접근 불가) 문서가 검색 결과에 하나라도 나타난 케이스 수 (0이어야 함)
+- forbidden 노출: 카테고리와 무관하게 forbidden 문서가 검색 결과에 나타난 케이스 수. distractor의 forbidden은
+  접근 가능한 유사 문서라 leak이 아니며 순위 혼동 참고용이다(판정은 distractor hit@1).
 - out_of_corpus top similarity: 최상위 유사도 평균/최대 (코퍼스 밖 질문이 얼마나 높게 매칭되는지)
 - expected가 비어 있는 케이스(접근 거절, out_of_corpus)는 recall/MRR/hit@1 집계에서 제외한다.
 
@@ -66,6 +68,7 @@ python3 scripts/eval/rag_eval.py --from-cache data/eval/rag-YYYYmmdd-HHMMSS.json
 - `--live`는 tmp 디렉터리에 sqlite DB와 벡터스토어를 만들어 운영 데이터와 격리하며,
   결과는 `data/eval/rag-{YYYYmmdd-HHMMSS}.jsonl`에 저장된다.
 - 오프라인 검증: `python -m pytest tests/test_rag_docset.py tests/test_rag_eval_metrics.py`
+- 배관 스모크: `tests/test_rag_eval_smoke.py`가 임베딩을 모킹해 `--live` 경로(시딩, retrieve, 캐시, 리포트)를 오프라인으로 검증한다(품질 아님, plumbing only).
 
 ## 채택/판정 기준 제안
 
