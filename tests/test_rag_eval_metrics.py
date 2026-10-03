@@ -9,6 +9,7 @@ import pytest
 from scripts.eval.rag_eval_metrics import (
     acl_leak,
     compute_metrics,
+    forbidden_exposed,
     hit_at_1,
     mrr,
     recall_at_k,
@@ -61,6 +62,17 @@ def test_acl_leak():
     assert acl_leak(_rec("f", "acl_task", [], ["d1", "d9"], forbidden=["d9"])) is True
     assert acl_leak(_rec("g", "acl_task", [], ["d1"], forbidden=["d9"])) is False
     assert acl_leak(_rec("h", "single_doc", ["d1"], ["d1"])) is False
+    assert acl_leak(_rec("i", "acl_restricted", [], ["d9"], forbidden=["d9"])) is True
+
+
+def test_distractor_forbidden_is_exposure_not_leak():
+    r = _rec("j", "distractor", ["d1"], ["d1", "d2"], forbidden=["d2"])
+    assert acl_leak(r) is False
+    assert forbidden_exposed(r) is True
+    m = compute_metrics([r, _rec("k", "acl_task", [], ["d9"], forbidden=["d9"])], k=5)
+    assert m["categories"]["distractor"]["leak_count"] == 0
+    assert m["categories"]["distractor"]["forbidden_exposed_count"] == 1
+    assert m["overall"]["leak_count"] == 1 and m["overall"]["forbidden_exposed_count"] == 2
 
 
 def test_compute_metrics_aggregation():

@@ -13,6 +13,9 @@ API/DB/파일 I/O 없이 레코드만 다룹니다. `scripts/eval/rag_eval.py --
 """
 
 OUT_OF_CORPUS = "out_of_corpus"
+# ACL leak 집계 대상. distractor의 forbidden은 접근 가능한 문서라 노출돼도 leak이 아니며
+# forbidden_exposed로 따로 셉니다.
+ACL_CATEGORIES = ("acl_task", "acl_restricted")
 
 
 def _ranked_keys(record: dict) -> list[str]:
@@ -53,10 +56,15 @@ def mrr(record: dict) -> float | None:
     return 0.0
 
 
-def acl_leak(record: dict) -> bool:
-    """forbidden 문서가 검색 결과에 하나라도 나타나면 True."""
+def forbidden_exposed(record: dict) -> bool:
+    """forbidden 문서가 검색 결과에 하나라도 나타나면 True(카테고리 무관)."""
     forbidden = set(record.get("forbidden_doc_keys", []))
     return any(item["doc_key"] in forbidden for item in record.get("retrieved", []))
+
+
+def acl_leak(record: dict) -> bool:
+    """ACL 카테고리 케이스에서 접근 불가 문서가 검색 결과에 나타나면 True."""
+    return record.get("category") in ACL_CATEGORIES and forbidden_exposed(record)
 
 
 def _mean(values: list[float]) -> float | None:
@@ -74,11 +82,12 @@ def _aggregate(records: list[dict], k: int) -> dict:
         "mrr": _mean(mrrs),
         "hit_at_1": _mean([1.0 if h else 0.0 for h in hits]),
         "leak_count": sum(1 for r in records if acl_leak(r)),
+        "forbidden_exposed_count": sum(1 for r in records if forbidden_exposed(r)),
     }
 
 
 def compute_metrics(records: list[dict], k: int = 5) -> dict:
-    """전체/카테고리별 recall@k, MRR, hit@1, ACL leak 건수를 계산합니다.
+    """전체/카테고리별 recall@k, MRR, hit@1, ACL leak 건수, forbidden 노출 건수를 계산합니다.
 
     out_of_corpus 카테고리에는 top_similarity의 mean/max를 추가합니다.
     """
@@ -108,14 +117,15 @@ def render_markdown(metrics: dict) -> str:
     """compute_metrics 결과를 markdown 표로 렌더링합니다."""
     k = metrics["k"]
     lines = [
-        f"| 카테고리 | n | 채점 n | recall@{k} | MRR | hit@1 | ACL leak |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        f"| 카테고리 | n | 채점 n | recall@{k} | MRR | hit@1 | ACL leak | forbidden 노출 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
 
     def row(name: str, agg: dict) -> str:
         return (
             f"| {name} | {agg['n']} | {agg['n_scored']} | {_fmt(agg['recall_at_k'])} "
-            f"| {_fmt(agg['mrr'], pct=False)} | {_fmt(agg['hit_at_1'])} | {agg['leak_count']} |"
+            f"| {_fmt(agg['mrr'], pct=False)} | {_fmt(agg['hit_at_1'])} | {agg['leak_count']} "
+            f"| {agg['forbidden_exposed_count']} |"
         )
 
     lines.append(row("overall", metrics["overall"]))
