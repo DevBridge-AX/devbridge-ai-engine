@@ -467,3 +467,148 @@ def test_old_records_without_task_type_render_as_before():
     report = cache_eval._embedding_report(records)
     assert "- 임베딩 모델: old-model\n" in report
     assert "taskType" not in report
+
+
+# --- direct 임계치 스윕 / 항상 검증 (P1) -----------------------------------------
+
+
+def _ds_records() -> list[dict]:
+    # (id, kind, similarity, verify_same)
+    rows = [
+        ("s0", "same_intent", 0.97, False),   # direct 0.95에선 hit, 항상 검증에선 miss
+        ("s1", "same_intent", 0.90, True),
+        ("s2", "same_intent", 0.82, True),
+        ("d0", "different_intent", 0.96, False),  # direct 0.95 false hit, 0.97/항상 검증 아님
+        ("d1", "different_intent", 0.88, False),
+        ("d2", "different_intent", 0.70, False),
+    ]
+    return [
+        {"id": i, "kind": k, "q1": "a", "q2": "b", "similarity": s, "verify_same": v,
+         "verify_outcome": "yes" if v else "no", "verify_prompt_version": "v1"}
+        for i, k, s, v in rows
+    ]
+
+
+def _drow(rows, mode, direct, cand):
+    return next(
+        r for r in rows
+        if r["mode"] == mode and r["direct_threshold"] == direct and r["candidate_threshold"] == cand
+    )
+
+
+def test_direct_sweep_false_hit_by_direct_shortcut():
+    from scripts.eval.cache_eval_metrics import direct_sweep
+
+    rows = direct_sweep(_ds_records())
+    assert len(rows) == (4 + 1) * 2
+    assert _drow(rows, "direct", 0.95, 0.80)["diff_hits"] == 1
+    assert _drow(rows, "direct", 0.95, 0.80)["direct_hits_diff"] == 1
+    assert _drow(rows, "direct", 0.97, 0.80)["diff_hits"] == 0
+    assert _drow(rows, "always_verify", None, 0.80)["diff_hits"] == 0
+    assert _drow(rows, "always_verify", None, 0.80)["direct_hits_diff"] == 0
+
+
+def test_direct_sweep_always_verify_misses_direct_same_pair():
+    from scripts.eval.cache_eval_metrics import direct_sweep
+
+    rows = direct_sweep(_ds_records())
+    assert _drow(rows, "direct", 0.95, 0.80)["same_hits"] == 3   # s0 즉시 + s1 + s2
+    assert _drow(rows, "always_verify", None, 0.80)["same_hits"] == 2
+    assert _drow(rows, "always_verify", None, 0.85)["same_hits"] == 1  # s2는 0.85 미만
+
+
+def test_direct_sweep_verify_calls_and_options():
+    from scripts.eval.cache_eval_metrics import direct_sweep
+
+    rows = direct_sweep(_ds_records())
+    av = _drow(rows, "always_verify", None, 0.80)
+    # sim >= 0.80: s0 s1 s2 d0 d1 -> 5건 (same 3 / diff 2)
+    assert (av["verify_calls"], av["verify_calls_same"], av["verify_calls_diff"]) == (5, 3, 2)
+    d95 = _drow(rows, "direct", 0.95, 0.80)
+    # 검증 대상: s1 s2 d1 (s0, d0는 즉시 hit)
+    assert (d95["verify_calls"], d95["verify_calls_same"], d95["verify_calls_diff"]) == (3, 2, 1)
+    only = direct_sweep(_ds_records(), [0.95], [0.80], include_always_verify=False)
+    assert len(only) == 1 and only[0]["mode"] == "direct"
+
+
+def test_direct_sweep_meets_l2_flag():
+    from scripts.eval.cache_eval_metrics import direct_sweep
+
+    rows = direct_sweep(_ds_records())
+    # 항상 검증 @0.80: hit 2/3=67%, false 0% -> 충족
+    assert _drow(rows, "always_verify", None, 0.80)["meets_l2"] is True
+    # direct 0.95 @0.80: false 1/3 -> 불충족
+    assert _drow(rows, "direct", 0.95, 0.80)["meets_l2"] is False
+    # 항상 검증 @0.85: hit 1/3=33% < 40% -> 불충족
+    assert _drow(rows, "always_verify", None, 0.85)["meets_l2"] is False
+
+
+def test_render_direct_sweep_markdown():
+    from scripts.eval.cache_eval_metrics import direct_sweep, render_direct_sweep_markdown
+
+    md = render_direct_sweep_markdown(direct_sweep(_ds_records()))
+    assert "## 즉시 hit 임계치 스윕 (direct / 항상 검증)" in md
+    assert "| 항상 검증 | 0.80 |" in md
+    assert "| direct 0.95 | 0.80 |" in md
+    assert "L2 기준" in md
+
+
+def _write_cache(path, records):
+    from scripts.eval.cache_eval_metrics import save_cache
+
+    save_cache(path, records)
+    return str(path)
+
+
+def test_cli_direct_sweep_requires_from_cache(capsys):
+    from scripts.eval.cache_eval import main
+
+    with pytest.raises(SystemExit):
+        main(["--direct-sweep"])
+    assert "--direct-sweep" in capsys.readouterr().err
+
+
+def test_cli_direct_thresholds_requires_direct_sweep(capsys):
+    from scripts.eval.cache_eval import main
+
+    with pytest.raises(SystemExit):
+        main(["--from-cache", "x.jsonl", "--direct-thresholds", "0.95"])
+    assert "--direct-thresholds" in capsys.readouterr().err
+
+
+def test_cli_direct_thresholds_validation(tmp_path, capsys):
+    from scripts.eval.cache_eval import main
+
+    path = _write_cache(tmp_path / "c.jsonl", _ds_records())
+    for bad in ("abc", "0", "1.5"):
+        with pytest.raises(SystemExit):
+            main(["--from-cache", path, "--direct-sweep", "--direct-thresholds", bad])
+    assert "--direct-thresholds" in capsys.readouterr().err
+
+
+def test_cli_direct_sweep_end_to_end(tmp_path, capsys):
+    from scripts.eval.cache_eval import main
+
+    path = _write_cache(tmp_path / "c.jsonl", _ds_records())
+    assert main(["--from-cache", path, "--direct-sweep", "--direct-thresholds", "0.95,0.97"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("## 즉시 hit 임계치 스윕") == 1
+    assert "direct 0.97" in out and "direct 0.96" not in out and "항상 검증" in out
+
+
+def test_cli_direct_sweep_multi_version(tmp_path, capsys):
+    from scripts.eval.cache_eval import main
+
+    path = _write_cache(tmp_path / "c.jsonl", _versioned_records())
+    assert main(["--from-cache", path, "--direct-sweep"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("## 즉시 hit 임계치 스윕") == 2
+
+
+def test_cli_direct_sweep_without_verify_fields(tmp_path, capsys):
+    from scripts.eval.cache_eval import main
+
+    path = _write_cache(tmp_path / "c.jsonl", _records())
+    assert main(["--from-cache", path, "--direct-sweep"]) == 1
+    captured = capsys.readouterr()
+    assert "verify 필드" in captured.err and "즉시 hit 임계치 스윕" not in captured.out

@@ -214,6 +214,15 @@ RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify
 python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.jsonl --direct-threshold 0.95
 ```
 
+direct 임계치 스윕과 "항상 검증" 모드(검증 없는 즉시 hit 지름길 제거)는 같은 캐시로 오프라인 계산한다
+(`--collect --verify`가 전 쌍을 검증하므로 추가 API 호출 없음, verify 필드가 없는 캐시는 오류 종료).
+
+```bash
+# direct 0.95~0.98 + 항상 검증을 candidate 0.80/0.85로 비교 (L2: false_hit<=2% AND hit>=40%)
+python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.jsonl --direct-sweep
+python3 scripts/eval/cache_eval.py --from-cache <file> --direct-sweep --direct-thresholds 0.95,0.97
+```
+
 ### 결과 (2026-10-02, `data/eval/cache-20261002-004305.jsonl`)
 
 - 검증 모델 / 프롬프트 버전: `claude-haiku-4-5-20251001` / `v1`, 임베딩 `gemini-embedding-2`
@@ -345,6 +354,19 @@ python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<holdout-timesta
 
 - 임베딩 상한 개선: 질문 임베딩 `taskType=SEMANTIC_SIMILARITY` 실험(10-03 계획 D1-b). 홀드아웃 same_intent 8/15가 0.80 미만.
 - direct 임계치 상향(0.97) 또는 "항상 검증" 모드 추가 시 오적중 0%·hit@0.80 40%(v2) 조합이 가능한지 재스윕.
+
+### direct 스윕 오프라인 재스윕 (2026-10-03, `data/eval/cache-20261002-004305.jsonl`)
+
+- `--direct-sweep`으로 2회차 캐시(튜닝 40쌍, v1, haiku)를 API 호출 없이 재스윕. 3회차 원본 캐시(v1v2 튜닝·홀드아웃)는 로컬에서 분실되어 사용 불가.
+
+| mode/direct | hit@0.80 | hit@0.85 | false_hit | verify 호출@0.80 |
+| --- | --- | --- | --- | --- |
+| direct 0.95 | 40.0% | 35.0% | 0.0% | 24 |
+| direct 0.96~0.98 | 40.0% | 35.0% | 0.0% | 25 |
+| 항상 검증 | 40.0% | 35.0% | 0.0% | 25 |
+
+- 튜닝셋에는 유사도 0.95 이상 different_intent 쌍이 없어 direct 구간 오적중이 0이고, direct 상향·항상 검증 모두 결과가 같다(검증 호출만 +1).
+- 오적중 원천(값만 다른 쌍, 0.957·0.961)은 홀드아웃에만 있으므로, L2 판단은 홀드아웃을 v2로 다시 수집(`--collect --verify`, LLM 30회)한 뒤 `--direct-sweep`으로 확인해야 한다.
 
 ## 후속 선택지
 

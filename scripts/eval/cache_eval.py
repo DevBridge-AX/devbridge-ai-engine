@@ -37,6 +37,11 @@ false_hit_rate(다른 질문을 hit = 오답)를 스윕해 권고 임계치를 �
     python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-20260930-120000.jsonl
     python3 scripts/eval/cache_eval.py --from-cache <file> --direct-threshold 0.95
 
+    # 2-b) direct 임계치 스윕 + "항상 검증" 모드 (API 호출 없음, verify 필드가 있는 캐시 필요).
+    #      direct 0.95~0.98 및 direct 지름길 없는 항상 검증을 candidate 0.80/0.85로 비교합니다.
+    python3 scripts/eval/cache_eval.py --from-cache <file> --direct-sweep
+    python3 scripts/eval/cache_eval.py --from-cache <file> --direct-sweep --direct-thresholds 0.95,0.97
+
 캐시 레코드 스키마(jsonl 1줄 = 질문 쌍 1건):
     {id, kind, q1, q2, similarity, embedding_model, embedding_task_type}
     (embedding_task_type은 --task-type 사용 시 해당 값, 미사용이면 null. 구버전 캐시엔 필드가 없어도 읽습니다.)
@@ -62,6 +67,7 @@ from app.config import EMBEDDING_TASK_TYPES
 from scripts.eval.cache_eval_metrics import (
     DEFAULT_DIRECT_THRESHOLD,
     cosine_similarity,
+    direct_sweep,
     group_by_prompt_version,
     has_multiple_prompt_versions,
     has_verify_fields,
@@ -69,6 +75,7 @@ from scripts.eval.cache_eval_metrics import (
     load_dataset,
     parse_prompt_versions,
     recommend_threshold,
+    render_direct_sweep_markdown,
     render_markdown,
     render_verify_markdown,
     render_version_comparison,
@@ -190,6 +197,17 @@ def _report(records: list[dict], direct_threshold: float = DEFAULT_DIRECT_THRESH
     return report
 
 
+def _direct_sweep_report(records: list[dict], direct_thresholds: list[float] | None = None) -> str:
+    """direct 스윕 섹션. 다버전 캐시는 버전별로 한 섹션씩 출력합니다."""
+    if has_multiple_prompt_versions(records):
+        out = ""
+        for version, recs in group_by_prompt_version(records).items():
+            out += f"\n# 검증 프롬프트 {version or '(미기록)'}\n"
+            out += render_direct_sweep_markdown(direct_sweep(recs, direct_thresholds))
+        return out
+    return render_direct_sweep_markdown(direct_sweep(records, direct_thresholds))
+
+
 def _embedding_report(records: list[dict]) -> str:
     rows = sweep(records)
     recommendations = {
@@ -270,6 +288,18 @@ def main(argv: list[str] | None = None) -> int:
         f"(기본 {DEFAULT_DIRECT_THRESHOLD}, 운영 SEMANTIC_CACHE_THRESHOLD와 맞출 것)",
     )
     parser.add_argument(
+        "--direct-sweep",
+        action="store_true",
+        help="--from-cache와 함께 사용: direct 임계치(기본 0.95~0.98)와 '항상 검증' 모드를 candidate "
+        "0.80/0.85로 스윕하는 섹션을 리포트에 추가합니다(verify 필드가 있는 캐시 필요).",
+    )
+    parser.add_argument(
+        "--direct-thresholds",
+        type=str,
+        default=None,
+        help="--direct-sweep의 direct 임계치 쉼표 목록(예: 0.95,0.96,0.97,0.98). 각 값은 (0,1] 범위.",
+    )
+    parser.add_argument(
         "--from-cache",
         type=Path,
         default=None,
@@ -305,6 +335,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.task_type is not None and not args.collect:
         parser.error("--task-type은 --collect와 함께만 사용할 수 있습니다.")
 
+    if args.direct_sweep and not args.from_cache:
+        parser.error("--direct-sweep은 --from-cache와 함께만 사용할 수 있습니다.")
+
+    direct_thresholds: list[float] | None = None
+    if args.direct_thresholds is not None:
+        if not args.direct_sweep:
+            parser.error("--direct-thresholds는 --direct-sweep과 함께만 사용할 수 있습니다.")
+        try:
+            direct_thresholds = [float(v) for v in args.direct_thresholds.split(",") if v.strip()]
+        except ValueError:
+            parser.error(f"--direct-thresholds는 쉼표로 구분한 숫자여야 합니다: {args.direct_thresholds}")
+        if not direct_thresholds or any(not (0 < v <= 1) for v in direct_thresholds):
+            parser.error("--direct-thresholds의 각 값은 (0, 1] 범위여야 합니다.")
+
     versions: list[str] | None = None
     if args.verify_prompt_version is not None:
         if not args.verify:
@@ -322,7 +366,18 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     if args.from_cache:
-        print(_report(load_cache(args.from_cache), direct_threshold=args.direct_threshold))
+        records = load_cache(args.from_cache)
+        if args.direct_sweep and not has_verify_fields(records):
+            print(
+                "--direct-sweep은 verify 필드가 있는 캐시가 필요합니다. "
+                "--collect --verify로 수집한 캐시를 지정하세요.",
+                file=sys.stderr,
+            )
+            return 1
+        report = _report(records, direct_threshold=args.direct_threshold)
+        if args.direct_sweep:
+            report += _direct_sweep_report(records, direct_thresholds)
+        print(report)
         return 0
 
     if args.collect:

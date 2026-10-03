@@ -531,3 +531,91 @@ def render_version_comparison(
         cells.append(_pct(rows[0]["false_hit_rate"]))
         lines.append("| " + " | ".join(cells) + " |")
     return "\n".join(lines).rstrip() + "\n"
+
+
+# ---------------------------------------------------------------------------
+# 즉시 hit(direct) 임계치 스윕 / 항상 검증 모드 (P1)
+# ---------------------------------------------------------------------------
+
+# direct 스윕 값과 후보 하한. direct 경유 hit는 검증을 건너뛰므로 값만 다른 쌍의 오적중 원천이 됩니다.
+DIRECT_SWEEP_THRESHOLDS = [0.95, 0.96, 0.97, 0.98]
+DIRECT_SWEEP_CANDIDATES = [0.80, 0.85]
+# L2 목표: false_hit_rate <= 2% AND hit_rate@0.80 이상 40% (채택 기준 ADOPT_*와 별개)
+L2_MAX_FALSE_HIT_RATE = 0.02
+L2_MIN_HIT_RATE = 0.40
+
+MODE_DIRECT = "direct"
+MODE_ALWAYS_VERIFY = "always_verify"
+
+
+def direct_sweep(
+    records: list[dict],
+    direct_thresholds: list[float] | None = None,
+    candidates: list[float] | None = None,
+    include_always_verify: bool = True,
+) -> list[dict]:
+    """direct 임계치별(+항상 검증) hit 품질을 계산합니다(순수 함수, verify 필드 필요).
+
+    - mode="direct": similarity >= direct면 검증 없이 hit (verify_sweep와 동일 판정).
+    - mode="always_verify": direct 지름길 없음. similarity >= candidate인 모든 쌍을 검증하고
+      YES일 때만 hit (direct_threshold=None). verify_sweep에 direct=inf를 넘겨 계산합니다.
+    direct_hits_diff: different_intent 쌍 중 direct 지름길(검증 없이)로 hit된 수 — 오적중 원천.
+    meets_l2: false_hit_rate <= L2_MAX_FALSE_HIT_RATE AND hit_rate >= L2_MIN_HIT_RATE.
+    """
+    directs = direct_thresholds if direct_thresholds is not None else DIRECT_SWEEP_THRESHOLDS
+    cands = candidates if candidates is not None else DIRECT_SWEEP_CANDIDATES
+    diff_sims = [float(r["similarity"]) for r in records if r["kind"] == KIND_DIFFERENT]
+
+    def _finish(row: dict, mode: str, direct: float | None) -> dict:
+        hit_rate, fhr = row["hit_rate"], row["false_hit_rate"]
+        row = {
+            **row,
+            "mode": mode,
+            "direct_threshold": direct,
+            "direct_hits_diff": 0 if direct is None else sum(1 for s in diff_sims if s >= direct),
+        }
+        row["meets_l2"] = (
+            hit_rate is not None
+            and fhr is not None
+            and fhr <= L2_MAX_FALSE_HIT_RATE
+            and hit_rate >= L2_MIN_HIT_RATE
+        )
+        return row
+
+    rows: list[dict] = []
+    for d in directs:
+        rows += [_finish(r, MODE_DIRECT, d) for r in verify_sweep(records, cands, direct_threshold=d)]
+    if include_always_verify:
+        rows += [
+            _finish(r, MODE_ALWAYS_VERIFY, None)
+            for r in verify_sweep(records, cands, direct_threshold=float("inf"))
+        ]
+    return rows
+
+
+def render_direct_sweep_markdown(rows: list[dict]) -> str:
+    """direct 스윕 결과를 markdown 섹션으로 렌더링합니다(순수 함수)."""
+    lines = [
+        "",
+        "## 즉시 hit 임계치 스윕 (direct / 항상 검증)",
+        "",
+        "- direct: 유사도 >= direct면 검증 없이 hit, candidate <= 유사도 < direct는 검증 YES일 때만 hit. "
+        "항상 검증: direct 지름길 없이 유사도 >= candidate 전 쌍을 검증하고 YES일 때만 hit.",
+        f"- L2 기준: false_hit_rate <= {L2_MAX_FALSE_HIT_RATE * 100:.0f}% AND "
+        f"hit_rate >= {L2_MIN_HIT_RATE * 100:.0f}% / 채택 기준: false_hit_rate <= "
+        f"{ADOPT_MAX_FALSE_HIT_RATE * 100:.0f}% AND hit_rate >= {ADOPT_MIN_HIT_RATE * 100:.0f}%",
+        "",
+        "| mode/direct | candidate | hit_rate | false_hit_rate | hits/same | hits/diff | "
+        "direct 경유 오적중 | verify 호출(same/diff) | L2 기준 | 채택 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for r in rows:
+        label = "항상 검증" if r["mode"] == MODE_ALWAYS_VERIFY else f"direct {r['direct_threshold']:.2f}"
+        lines.append(
+            f"| {label} | {r['candidate_threshold']:.2f} | {_pct(r['hit_rate'])} | {_pct(r['false_hit_rate'])} | "
+            f"{r['same_hits']}/{r['same_total']} | {r['diff_hits']}/{r['diff_total']} | "
+            f"{r['direct_hits_diff']} | "
+            f"{r['verify_calls']} ({r['verify_calls_same']}/{r['verify_calls_diff']}) | "
+            f"{'O' if r['meets_l2'] else '-'} | {'O' if r['adopt'] else '-'} |"
+        )
+    return "\n".join(lines).rstrip() + "\n"
