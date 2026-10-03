@@ -6,10 +6,24 @@
 """
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Gemini batchEmbedContents가 받는 taskType 값. embedder.py와 scripts/eval/cache_eval.py가
+# 같은 정의를 재사용합니다(embedder → config 단방향 import 유지를 위해 여기에 정의).
+EmbeddingTaskType = Literal[
+    "RETRIEVAL_QUERY",
+    "RETRIEVAL_DOCUMENT",
+    "SEMANTIC_SIMILARITY",
+    "CLASSIFICATION",
+    "CLUSTERING",
+    "QUESTION_ANSWERING",
+    "FACT_VERIFICATION",
+    "CODE_RETRIEVAL_QUERY",
+]
+EMBEDDING_TASK_TYPES: tuple[str, ...] = get_args(EmbeddingTaskType)
 
 
 class Settings(BaseSettings):
@@ -52,6 +66,11 @@ class Settings(BaseSettings):
     # 기준으로 텍스트 1건당 0.2 토큰을 고정 추정치로 사용합니다(usage_logs 누적용).
     # 실측이 아닌 추정치이며, embedder.EmbedResult.token_source="estimate_per_text"로 표시됩니다.
     embedding_tokens_per_text: float = 0.2
+
+    # 질의 측 임베딩(채팅 질의 / 시맨틱 캐시 / 리트리버 질의)에만 적용되는 Gemini taskType.
+    # 문서 인덱싱은 taskType 없이 수행되므로, 값을 바꾸면 검색 유사도 분포가 달라질 수 있습니다.
+    # 반드시 평가(docs/semantic-cache-eval.md) 후에만 변경하세요. None이면 taskType을 보내지 않습니다(현행).
+    embedding_query_task_type: EmbeddingTaskType | None = None
 
     # LLM provider
     main_model: str = "claude-sonnet-4-6"

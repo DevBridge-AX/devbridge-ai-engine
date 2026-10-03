@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.core.cache import verifier
 from app.core.cache.semantic_cache import CacheEntry, get_semantic_cache, make_namespace
-from app.core.embeddings.embedder import embed_texts
+from app.core.embeddings.embedder import embed_texts, query_embed_kwargs
 from app.core.llm import provider as llm
 from app.core.llm import query_rewriter
 from app.core.llm.persona_prompts import get_system_prompt
@@ -107,7 +107,7 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
     if cache_enabled:
         cache = get_semantic_cache()
         with timer.measure("embed_ms"):
-            query_embedding = (await embed_texts([rewritten_query])).embeddings[0]
+            query_embedding = (await embed_texts([rewritten_query], **query_embed_kwargs())).embeddings[0]
         ns = make_namespace(
             request.workspace_id,
             request.role,

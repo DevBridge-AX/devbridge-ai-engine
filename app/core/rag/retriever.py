@@ -32,7 +32,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.core.embeddings.embedder import embed_texts
+from app.core.embeddings.embedder import embed_texts, query_embed_kwargs
 from app.core.metrics import StageTimer
 from app.core.rag.bm25_index import BM25SearchResult, get_bm25_manager
 from app.db.models import (
@@ -168,7 +168,7 @@ async def _vector_only_retrieve(
     """기존 vector-only 검색 경로."""
     if query_embedding is None:
         with timer.measure("embed_ms") if timer else nullcontext():
-            embed_result = await embed_texts([query])
+            embed_result = await embed_texts([query], **query_embed_kwargs())
         query_embedding = embed_result.embeddings[0]
 
     restricted = access is not None and not access.is_unrestricted
@@ -241,7 +241,7 @@ async def _vector_only_retrieve(
 
 async def _get_query_embedding(query: str, timer: StageTimer | None = None) -> list[float]:
     with timer.measure("embed_ms") if timer else nullcontext():
-        embed_result = await embed_texts([query])
+        embed_result = await embed_texts([query], **query_embed_kwargs())
     return embed_result.embeddings[0]
 
 
