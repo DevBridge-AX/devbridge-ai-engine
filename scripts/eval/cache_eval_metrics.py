@@ -220,6 +220,7 @@ def render_markdown(
     sweep_rows: list[dict],
     recommendations: dict[str, dict | None],
     embedding_model: str = "-",
+    embedding_task_type: str | None = None,
 ) -> str:
     """스윕 결과를 markdown으로 렌더링합니다(순수 함수).
 
@@ -233,7 +234,8 @@ def render_markdown(
         "",
         "## 실험 조건",
         "",
-        f"- 임베딩 모델: {embedding_model}",
+        f"- 임베딩 모델: {embedding_model}"
+        + (f" (taskType: {embedding_task_type})" if embedding_task_type else ""),
         f"- same_intent 쌍: {n_same}건",
         f"- different_intent 쌍: {n_diff}건",
         "- hit 판정: 코사인 유사도 >= 임계치",

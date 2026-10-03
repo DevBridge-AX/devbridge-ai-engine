@@ -236,3 +236,77 @@ async def test_provider_tokens_none_when_usage_missing():
 
     assert result.provider_tokens is None
     assert result.total_tokens == pytest.approx(n * _TOKENS_PER_TEXT)
+
+
+# --- taskType (선택 인자) -----------------------------------------------------
+
+
+def _posted_requests(mock_client) -> list[list[dict]]:
+    """post 호출별 body["requests"] 목록."""
+    return [c.kwargs["json"]["requests"] for c in mock_client.post.call_args_list]
+
+
+async def test_no_task_type_by_default_keeps_body():
+    mock_client = _make_mock_client([[0.1]])
+
+    with patch("app.core.embeddings.embedder.httpx.AsyncClient", return_value=_patch_client(mock_client)):
+        result = await embed_texts(["텍스트"])
+
+    (requests,) = _posted_requests(mock_client)
+    assert all("taskType" not in r for r in requests)
+    assert set(requests[0]) == {"model", "content"}
+    assert result.task_type is None
+
+
+async def test_task_type_added_to_each_request():
+    mock_client = _make_mock_client([[0.1], [0.2]])
+
+    with patch("app.core.embeddings.embedder.httpx.AsyncClient", return_value=_patch_client(mock_client)):
+        result = await embed_texts(["a", "b"], task_type="SEMANTIC_SIMILARITY")
+
+    (requests,) = _posted_requests(mock_client)
+    assert [r["taskType"] for r in requests] == ["SEMANTIC_SIMILARITY"] * 2
+    assert requests[0]["content"] == {"parts": [{"text": "a"}]}
+    assert result.task_type == "SEMANTIC_SIMILARITY"
+
+
+async def test_task_type_applied_to_every_batch():
+    n = 150
+    resp1, resp2 = MagicMock(), MagicMock()
+    for resp, size in ((resp1, 100), (resp2, 50)):
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {"embeddings": [{"values": [0.1]}] * size}
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=[resp1, resp2])
+
+    with patch("app.core.embeddings.embedder.httpx.AsyncClient", return_value=_patch_client(mock_client)):
+        result = await embed_texts(["t"] * n, task_type="RETRIEVAL_QUERY")
+
+    batches = _posted_requests(mock_client)
+    assert [len(b) for b in batches] == [100, 50]
+    assert all(r["taskType"] == "RETRIEVAL_QUERY" for b in batches for r in b)
+    assert result.task_type == "RETRIEVAL_QUERY"
+
+
+async def test_unknown_task_type_raises_before_request():
+    mock_client = _make_mock_client([[0.1]])
+
+    with patch("app.core.embeddings.embedder.httpx.AsyncClient", return_value=_patch_client(mock_client)):
+        with pytest.raises(ValueError, match="task_type"):
+            await embed_texts(["a"], task_type="NOPE")
+
+    mock_client.post.assert_not_called()
+
+
+def test_query_embed_kwargs_follows_setting(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.core.embeddings import embedder
+
+    monkeypatch.setattr(embedder, "get_settings", lambda: SimpleNamespace(embedding_query_task_type=None))
+    assert embedder.query_embed_kwargs() == {}
+
+    monkeypatch.setattr(
+        embedder, "get_settings", lambda: SimpleNamespace(embedding_query_task_type="SEMANTIC_SIMILARITY")
+    )
+    assert embedder.query_embed_kwargs() == {"task_type": "SEMANTIC_SIMILARITY"}
