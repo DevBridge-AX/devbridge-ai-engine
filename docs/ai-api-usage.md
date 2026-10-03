@@ -319,6 +319,30 @@ RUN_LIVE_LLM=1 python3 -m pytest -m live -q tests/live
    계약을 검증합니다. 단독 실행: `RUN_LIVE_LLM=1 python3 -m pytest -m live -q
    tests/live/test_analysis_live.py -s`.
 
+### 커밋 분석 비용 실측(L5) 방법
+
+커밋 분석 llm 모드의 건당 토큰·지연과 `COMMIT_ANALYSIS_MAX_PER_BATCH` 상한 N의 근거를
+실측하는 전용 테스트입니다(결과 수치는 실행 후 §6에 기입).
+
+```bash
+RUN_LIVE_LLM=1 python3 -m pytest -m live -q tests/live/test_commit_analysis_cost_live.py -s
+```
+
+- 호출 예산: 메인 분석 모델(`MAIN_MODEL`) 최대 10회(상한 `_CAP=10`) + 합성 커밋 12건
+  임베딩. 나머지 2건은 상한으로 LLM 없이 fallback 처리됩니다.
+- 실제 배치 경로(`ingest_git_commits`)를 tmp sqlite DB에서 1회 실행하며, 커밋은 소(1파일·
+  수 줄)/중(3파일·30~60줄)/대(5파일·150~300줄) diff 버킷을 순환 배치합니다. Spring 작성자
+  조회는 막고(`_lookup_author_id` → None) 실 DB/백엔드는 건드리지 않습니다.
+- 기록 필드(`live_run_recorder["commit_analysis_cost"]` + stdout JSON, 세션 종료 리포트
+  `persona_answers_preview`에 포함): `model`, `cap`, `commit_count`, `llm_calls`, `capped`,
+  배치 `total_ms`/`embed_ms`, 커밋별(`index`, `bucket`, `commit_text_chars`, `sent_chars`(실제 전송 길이, 8000자 상한), `prompt_tokens`,
+  `completion_tokens`, `latency_ms`, `error_type`, `tokens_per_char`), 전체/버킷별 평균·p50·p95
+  (토큰·지연), `projected_tokens_per_batch`(= 커밋당 평균 총 토큰 × 상한).
+- `llm_calls.jsonl` 레코드에는 커밋 식별자가 없어 순차 처리 순서로 커밋과 대응시킵니다.
+  diff 미리보기는 `MAX_ANALYSIS_CHARS`(8000자)에서 잘리므로 대형 버킷은 `diff_truncated=true`입니다.
+- assert는 불변식만 확인합니다(LLM 호출 수 == min(12, 10), 메트릭 `analysis_llm_count`=10 ·
+  `analysis_capped_count`=2, 모든 커밋의 분석 행 존재·`risk_level` 허용값).
+
 ### 비용 상한 설계
 
 - 코퍼스 문서 4개(각 1~2KB), `top_k=5` 유지.
