@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from app.core.security import verify_internal_api_key
 from app.db.models import KnowledgeDocument
 from app.db.session import get_db
-from app.pipelines.document_ingestion import ingest_document
+from app.pipelines.document_ingestion import ingest_document, is_ingestion_in_flight
 from app.pipelines.git_ingestion import ingest_git_commits
 from app.pipelines.owner_answer_ingestion import ingest_owner_answer
 from app.schemas.ingestion import (
@@ -157,7 +157,7 @@ async def retry_document_ingestion(
     db: Session = Depends(get_db),
     _: None = Depends(verify_internal_api_key),
 ) -> dict:
-    """FAILED/PENDING 상태의 문서를 재인덱싱합니다."""
+    """FAILED/PENDING 상태의 문서를 재인덱싱합니다. COMPLETED/진행 중이면 409."""
     doc = db.execute(
         select(KnowledgeDocument).where(
             KnowledgeDocument.id == request.document_id
@@ -165,6 +165,10 @@ async def retry_document_ingestion(
     ).scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
+    if doc.analysis_status == "COMPLETED":
+        raise HTTPException(status_code=409, detail="Document already indexed")
+    if is_ingestion_in_flight(doc.id):
+        raise HTTPException(status_code=409, detail="Document ingestion already in progress")
 
     background_tasks.add_task(
         ingest_document,
