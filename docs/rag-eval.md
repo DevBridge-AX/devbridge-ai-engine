@@ -79,4 +79,47 @@ python3 scripts/eval/rag_eval.py --from-cache data/eval/rag-YYYYmmdd-HHMMSS.json
 
 ## 결과
 
-1회차 미실행.
+1회차 미실행 (실측 대기: L1). 아래는 실행 후 수치만 채우는 템플릿이며 모든 칸은 미실측이다.
+
+### 1회차 (실측 대기) - 실험 환경 기준
+
+모든 수치는 **실험 환경(가상 문서 10건, 질의 30건) 기준**이다.
+
+- 실행일: 미실측
+- 원본 파일: `data/eval/rag-미실측.jsonl` (`data/`는 `.gitignore` 대상)
+- 임베딩 모델: 미실측 (`--live` 실행 시 기록된 `embedding_model` 확인)
+- 임베딩 task type: 미실측 (현행 embedder 기본값인지 확인)
+- 명령: `RUN_LIVE_LLM=1 python3 scripts/eval/rag_eval.py --live --top-k 5`
+- 리포트: `python3 scripts/eval/rag_eval.py --from-cache data/eval/rag-<timestamp>.jsonl`
+
+#### 전체 요약
+
+| 지표 | 목표 (채택/판정 기준) | 실측 | 달성 여부 |
+| --- | --- | --- | --- |
+| single_doc recall@5 | >= 90% | 미실측 | 미실측 |
+| ACL leak (acl_task + acl_restricted만) | = 0 | 미실측 | 미실측 |
+| forbidden 노출 (전체 카테고리, 참고용) | 판정 기준 없음 (distractor는 순위 혼동 참고) | 미실측 | - |
+| distractor hit@1 | >= 75% | 미실측 | 미실측 |
+| out_of_corpus top similarity 최대 | 판정 기준 없음 (그라운딩 임계치 검토 시 참고) | 미실측 | - |
+
+#### 카테고리별
+
+| 카테고리 | n | 채점 n | recall@5 | MRR | hit@1 | ACL leak | forbidden 노출 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| single_doc | 12 | 미실측 | 미실측 | 미실측 | 미실측 | - | 미실측 |
+| cross_doc | 3 | 미실측 | 미실측 | 미실측 | 미실측 | - | 미실측 |
+| distractor | 4 | 미실측 | 미실측 | 미실측 | 미실측 | - | 미실측 |
+| acl_task | 5 | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 |
+| acl_restricted | 3 | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 |
+| out_of_corpus | 3 | 미실측 | - | - | - | - | 미실측 |
+| overall | 30 | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 |
+
+out_of_corpus top similarity: 평균 미실측 / 최대 미실측
+
+#### 결론
+
+- 미실측 (실행 후 기입)
+
+#### 후속
+
+- 미실측 (실행 후 기입)
