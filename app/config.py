@@ -137,6 +137,11 @@ class Settings(BaseSettings):
     semantic_cache_candidate_threshold: float = Field(default=0.86, ge=0, le=1)
     # 재검증 LLM 호출 타임아웃(초). 초과/오류/파싱 실패는 모두 miss로 처리합니다(fail-closed).
     semantic_cache_verify_timeout_seconds: float = Field(default=3.0, gt=0)
+    # 재검증 LLM 호출 일일 상한(비용 가드). 0이면 무제한(기존 동작).
+    # 프로세스 로컬 카운터라 멀티 워커에서는 워커별로 적용됩니다(실효 상한 = N × 워커 수).
+    # 날짜(로컬)가 바뀌면 초기화되며, 소진되면 후보 구간 조회는 LLM 호출 없이 miss로 처리합니다(fail-closed).
+    # 유사도 >= semantic_cache_threshold인 즉시 hit는 영향받지 않습니다.
+    semantic_cache_verify_daily_limit: int = Field(default=0, ge=0)
     # 재검증 프롬프트 버전(app/core/cache/verifier.py).
     # 기본값 근거: docs/semantic-cache-eval.md 3회차 — 홀드아웃 검증기 정확도 70% → 90%(false YES 0 유지).
     # v1은 "애매하면 NO" 규칙의 과보수 프롬프트로, 비교·회귀 확인용으로 유지합니다.

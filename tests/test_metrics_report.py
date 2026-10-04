@@ -257,6 +257,20 @@ class TestCacheVerifySummary:
         assert "재검증: n/a" in markdown
         assert "재검증 호출" not in markdown
 
+    def test_limit_records_counted_separately(self):
+        records = self._records() + [
+            {"cache_enabled": True, "cache_hit": False, "cache_verify_result": "limit", "cache_verify_ms": None},
+            {"cache_enabled": True, "cache_hit": False, "cache_verify_result": "limit", "cache_verify_ms": None},
+        ]
+        summary = metrics_report.compute_cache_summary(records)
+
+        assert summary["verify_count"] == 3
+        assert "limit" not in summary["verify_outcomes"]
+        assert summary["verify_limited_count"] == 2
+        markdown = metrics_report.render_markdown({"chat_metrics": records})
+        assert "재검증 호출: 3 " in markdown
+        assert "재검증 상한 소진(miss 처리): 2" in markdown
+
     def test_no_hits_share_is_zero(self):
         records = [{"cache_enabled": True, "cache_hit": False, "cache_verify_result": "no", "cache_verify_ms": 1.0}]
         summary = metrics_report.compute_cache_summary(records)
