@@ -156,7 +156,7 @@ JSON 파싱 오류를 던지면 `analyze_document()`가 이를 잡아 fallback �
 | 용도 | Git 커밋의 요약/영향범위/리스크/다음조치 생성 |
 | 호출 함수 | `call_structured()` → MAIN_MODEL |
 | 현재 모드 | `AI_ANALYSIS_MODE` 설정에 따름 |
-| 환경변수 | `AI_ANALYSIS_MODE`, `COMMIT_ANALYSIS_MAX_PER_BATCH` |
+| 환경변수 | `AI_ANALYSIS_MODE`, `COMMIT_ANALYSIS_MAX_PER_BATCH`, `COMMIT_ANALYSIS_CAP_PRIORITY` |
 | 호출 시점 | Git 커밋 인덱싱 시 (`pipelines/git_ingestion.py`) |
 
 **한국어 출력 규칙 / PII 최소화**: 커밋 분석 system prompt에 문서 분석과 동일한 취지의
@@ -174,6 +174,13 @@ push 시 비용/지연이 선형으로 증가하므로 `COMMIT_ANALYSIS_MAX_PER_
 - 양수 N: **배치 순서상 앞의 N개 커밋**만 LLM 분석을 시도하고, 나머지는 LLM 호출 없이
   fallback 휴리스틱(`_fallback_analyze_commit`)으로 분석합니다. 임베딩/인덱싱은 모든 커밋에
   대해 그대로 수행되며 상한은 분석에만 영향을 줍니다.
+- `COMMIT_ANALYSIS_CAP_PRIORITY`(상한 > 0일 때만 의미 있음): LLM 슬롯을 받을 커밋 선정 기준.
+  - `order`(기본): 위와 같이 배치 순서상 앞의 N개.
+  - `size`: **변경 규모가 큰 상위 N개**. 변경 라인 수(additions+deletions, None=0) -> 변경 파일 수
+    -> diff 텍스트 길이 순으로 비교하고 동률은 배치 순서를 유지합니다. 큰 변경일수록 LLM 요약의
+    이점이 크고 작은 변경은 휴리스틱으로 충분하다는 판단입니다. 커밋 처리(인덱싱/DB) 순서는
+    바뀌지 않고 LLM 대상만 달라집니다. 선정된 커밋이 분석 전에 실패(savepoint 롤백)하면 그 슬롯은
+    다른 커밋에 넘어가지 않고 비게 됩니다(`order`는 실패 커밋이 슬롯을 소모하지 않음).
 - LLM 호출이 실패해 fallback으로 떨어진 커밋도 시도 1회로 셉니다(실패한 호출도 비용 발생).
 - `AI_ANALYSIS_MODE=fallback`(또는 API 키 없음)이면 상한은 의미가 없습니다.
 - 상한 초과 시 배치당 1회 info 로그(workspace_id, cap, 커밋 총수)를 남기고, `git_ingestion`
@@ -256,6 +263,7 @@ EMBEDDING_MODEL=gemini-embedding-2    # 임베딩 생성
 
 AI_ANALYSIS_MODE=fallback             # 문서 분석 모드 (fallback | llm)
 COMMIT_ANALYSIS_MAX_PER_BATCH=0       # push 1회당 커밋 LLM 분석 상한 (0=무제한, 초과분 fallback)
+COMMIT_ANALYSIS_CAP_PRIORITY=order    # 상한 적용 시 LLM 대상 선정 기준 (order | size)
 DOCUMENT_ANALYSIS_MODEL=fallback-v1   # 문서 분석 표시용 모델명
 ```
 
