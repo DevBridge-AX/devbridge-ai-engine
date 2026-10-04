@@ -351,6 +351,23 @@ RUN_LIVE_LLM=1 python3 -m pytest -m live -q tests/live/test_commit_analysis_cost
 - assert는 불변식만 확인합니다(LLM 호출 수 == min(12, 10), 메트릭 `analysis_llm_count`=10 ·
   `analysis_capped_count`=2, 모든 커밋의 분석 행 존재·`risk_level` 허용값).
 
+#### L5 결과 (실측 대기) - 실험 환경 기준
+
+모든 수치는 **실험 환경(합성 커밋 12건, 상한 `_CAP=10`) 기준**이며 현재 모든 칸은 미실측이다.
+실행일 / 모델: 미실측 / 미실측 (`model`). 출력 필드는 위 기록 필드를 따른다.
+
+| 버킷 | 건수 | 평균 prompt_tokens | 평균 completion_tokens | 지연 p50 | sent_chars | tokens_per_char |
+| --- | --- | --- | --- | --- | --- | --- |
+| small | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 |
+| medium | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 |
+| large | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 (8000자 상한, `diff_truncated`) | 미실측 |
+| 전체 | 미실측 | 미실측 | 미실측 | 미실측 | - | - |
+
+- `llm_calls` / `capped`: 미실측 / 미실측, 배치 `total_ms` / `embed_ms`: 미실측 / 미실측
+- `projected_tokens_per_batch` (= 커밋당 평균 총 토큰 x 상한): 미실측
+- 권장 상한 N (`COMMIT_ANALYSIS_MAX_PER_BATCH`): 미실측
+- 근거: 미실측 (push당 허용 토큰/지연 예산 대비 `projected_tokens_per_batch`, 지연 p95를 근거로 기입)
+
 ### 비용 상한 설계
 
 - 코퍼스 문서 4개(각 1~2KB), `top_k=5` 유지.

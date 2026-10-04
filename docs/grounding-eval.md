@@ -280,3 +280,21 @@ RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline
 - **(당시) 이 PR은 도구·변형 추가만 포함하며, 코드 기본값 변경은 승인 전까지 하지 않는다.** -> 승인되어 2026-10-02(W1)에 기본값을 `v2-strict` / `top_k=3`으로 적용했다.
 - 승인 시 코드 변경 전에 `.env`로 먼저 적용해 확인할 수 있다: `GROUNDING_PROMPT_VERSION=v2-strict`, `GROUNDING_JUDGE_TOP_K=3`.
 - 위 결론은 실험 환경(코퍼스 4문서, 40건) 기준이므로, 실제 워크스페이스 데이터에서의 재검증이 필요하다.
+
+## 3회차: 재현성 반복 측정 (L4, 실측 대기)
+
+`--repeat`로 strict_top3의 92.5%(accuracy)가 재현되는지 측정하는 결과 템플릿이다. 아래 모든 수치는
+**실험 환경(코퍼스 4문서, 40건) 기준**이며 현재 모든 칸은 미실측이다.
+
+- 명령: `RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline,strict_top3 --repeat 2` (LLM 호출 = 40 x 2 x 2 = 160회, 반복 횟수는 비용과 함께 조정)
+- 오프라인 리포트: `python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-<timestamp>.jsonl` (끝의 `# 반복 측정` 섹션)
+- 실행일 / 원본 파일 / 판정 모델 / 임계치: 미실측 / `data/eval/grounding-미실측.jsonl` / 미실측 / 0.35
+
+| variant | repeats | accuracy mean±sd (min~max) | not-groundable recall mean±sd | flip rate (flip 케이스 ids) |
+| --- | --- | --- | --- | --- |
+| baseline | 미실측 | 미실측 | 미실측 | 미실측 |
+| strict_top3 | 미실측 | 미실측 | 미실측 | 미실측 |
+
+- 참고(이전 단일 실행, 2026-10-01): baseline 80.0% / recall 41.7%, strict_top3 92.5% / recall 83.3%
+
+판정 (92.5% 재현 여부): 미실측 (strict_top3 accuracy 평균이 92.5%에 근접하고 baseline과 격차가 sd보다 큰지, flip rate가 낮은지 기입)
