@@ -127,12 +127,8 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
             candidate_threshold = settings.semantic_cache_candidate_threshold
             if candidate_threshold <= cache.threshold:
                 lookup_floor = candidate_threshold
-            else:
-                logger.warning(
-                    "semantic cache verify skipped: candidate_threshold(%s) > threshold(%s)",
-                    candidate_threshold,
-                    cache.threshold,
-                )
+            # 후보 구간이 비어 있으면(>, ==) 재검증이 실행되지 않는다. 경고는 프로세스당 1회만.
+            verifier.warn_verify_band_once(cache.threshold, candidate_threshold)
         found = cache.lookup(ns, query_embedding, min_similarity=lookup_floor)
         cache_lookup_ms = (time.perf_counter() - lookup_start) * 1000
         if found is not None:
@@ -146,13 +142,19 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
             verified = access_ok
             if access_ok and similarity < cache.threshold:
                 # 후보 구간: 최선 후보 1건만 LLM으로 "같은 질문인가" 확인한다. YES만 hit.
-                with timer.measure("cache_verify_ms"):
-                    verdict = await verifier.verify_same_question(rewritten_query, entry.query)
-                verified = verdict.same
-                cache_verify_ms = verdict.latency_ms
-                cache_verify_result = verdict.outcome
-                if verified:
-                    cache.mark_hit(ns, entry)
+                # 일일 호출 상한이 소진됐으면 LLM을 호출하지 않고 miss로 처리한다(fail-closed).
+                daily_limit = int(getattr(settings, "semantic_cache_verify_daily_limit", 0) or 0)
+                if verifier.get_verify_budget().try_acquire(daily_limit):
+                    with timer.measure("cache_verify_ms"):
+                        verdict = await verifier.verify_same_question(rewritten_query, entry.query)
+                    verified = verdict.same
+                    cache_verify_ms = verdict.latency_ms
+                    cache_verify_result = verdict.outcome
+                    if verified:
+                        cache.mark_hit(ns, entry)
+                else:
+                    verified = False
+                    cache_verify_result = "limit"
             if verified:
                 cache_hit = True
                 cache_similarity = similarity

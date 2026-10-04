@@ -11,9 +11,11 @@ hit와 오적중을 가르기 어렵습니다. 임계치 아래 후보 구간의
 """
 
 import asyncio
+import datetime
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -90,7 +92,91 @@ def get_cache_verify_prompt(version: str) -> str:
 
 _VERIFY_MAX_TOKENS = 16
 
-VerifyOutcome = Literal["yes", "no", "invalid", "error", "timeout"]
+# "limit"은 verify_same_question이 반환하지 않으며, 일일 호출 상한 소진으로 호출을 건너뛴
+# 경우에 파이프라인이 메트릭(cache_verify_result)에만 기록하는 값입니다.
+VerifyOutcome = Literal["yes", "no", "invalid", "error", "timeout", "limit"]
+
+_band_warned = False
+
+
+def check_verify_band(threshold: float, candidate_threshold: float) -> str | None:
+    """재검증 후보 구간이 비어 있으면 경고 메시지를, 정상이면 None을 반환합니다(순수 함수).
+
+    candidate_threshold >= threshold이면 후보 구간(candidate <= 유사도 < threshold)이 없어
+    재검증이 한 번도 실행되지 않습니다. 동작은 바꾸지 않고(재검증 없이 기존 경로) 경고만 합니다.
+    """
+    if candidate_threshold > threshold:
+        return (
+            f"semantic cache verify never runs: candidate_threshold({candidate_threshold}) "
+            f"> threshold({threshold}); no candidate band"
+        )
+    if candidate_threshold == threshold:
+        return (
+            f"semantic cache verify never runs: candidate_threshold({candidate_threshold}) "
+            f"== threshold({threshold}); candidate band is empty"
+        )
+    return None
+
+
+def warn_verify_band_once(threshold: float, candidate_threshold: float) -> None:
+    """check_verify_band 경고를 프로세스당 1회만 로그로 남깁니다(요청마다 반복 방지)."""
+    global _band_warned
+    if _band_warned:
+        return
+    message = check_verify_band(threshold, candidate_threshold)
+    if message is not None:
+        _band_warned = True
+        logger.warning(message)
+
+
+class VerifyBudget:
+    """재검증 LLM 호출 일일 상한(비용 가드). 프로세스 로컬 카운터이며 날짜가 바뀌면 초기화됩니다.
+
+    limit <= 0이면 무제한(항상 True)입니다. 상한이 처음 소진된 날에는 경고 로그를 1회만 남깁니다.
+    """
+
+    def __init__(self, today: Callable[[], datetime.date] = datetime.date.today) -> None:
+        self._today = today
+        self._date: datetime.date | None = None
+        self._count = 0
+        self._warned_date: datetime.date | None = None
+
+    def try_acquire(self, limit: int) -> bool:
+        """호출 1회분을 확보하면 True, 상한 소진이면 False(호출하지 말 것)."""
+        if limit <= 0:
+            return True
+        today = self._today()
+        if self._date != today:
+            self._date = today
+            self._count = 0
+        if self._count < limit:
+            self._count += 1
+            return True
+        if self._warned_date != today:
+            self._warned_date = today
+            logger.warning(
+                "semantic cache verify daily limit reached (%s); candidate lookups treated as miss",
+                limit,
+            )
+        return False
+
+
+_verify_budget: VerifyBudget | None = None
+
+
+def get_verify_budget() -> VerifyBudget:
+    """VerifyBudget 싱글톤을 반환합니다."""
+    global _verify_budget
+    if _verify_budget is None:
+        _verify_budget = VerifyBudget()
+    return _verify_budget
+
+
+def reset_verify_guards() -> None:
+    """테스트용: 예산 싱글톤과 후보 구간 경고 플래그를 초기화합니다."""
+    global _verify_budget, _band_warned
+    _verify_budget = None
+    _band_warned = False
 
 
 @dataclass
