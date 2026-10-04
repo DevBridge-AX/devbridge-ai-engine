@@ -99,6 +99,12 @@ class Settings(BaseSettings):
     # (임베딩/인덱싱은 모든 커밋에 대해 그대로 수행)
     commit_analysis_max_per_batch: int = Field(0, ge=0)
 
+    # 상한(commit_analysis_max_per_batch > 0)이 적용될 때 LLM 슬롯을 받을 커밋 선정 기준
+    # (AI_ANALYSIS_MODE=llm이고 상한 > 0일 때만 의미 있음. 커밋 처리/인덱싱 순서는 항상 배치 순서 그대로)
+    # order: 배치 순서상 앞의 N개(현행 동작), size: 변경 규모가 큰 상위 N개
+    # (변경 라인 수 -> 변경 파일 수 -> diff 길이 순, 동률은 배치 순서 유지)
+    commit_analysis_cap_priority: Literal["order", "size"] = "order"
+
     # provider.py 컨텍스트 길이 가드
     max_context_tokens: int = 30000
 

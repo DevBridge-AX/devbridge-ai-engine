@@ -142,6 +142,12 @@ async def _run(
     (임베딩/인덱싱은 모든 커밋에 대해 그대로 수행). 시도 횟수는 LLM 호출이 실패해 fallback으로
     떨어진 경우에도 센다(실패한 시도도 호출 비용이 발생하므로). `analysis_stats`가 주어지면
     `llm_count`(LLM 경로 시도 수)와 `capped_count`(상한으로 fallback 강제된 커밋 수)를 채웁니다.
+
+    `COMMIT_ANALYSIS_CAP_PRIORITY`: `order`(기본)는 위 설명대로 처리 순서상 앞의 N번째 시도까지를
+    LLM 대상으로 하며, 분석 전에 실패해 롤백된 커밋은 슬롯을 소모하지 않는다(카운터 방식).
+    `size`는 루프 시작 전에 변경 규모가 큰 상위 N개 커밋의 인덱스를 미리 선정하고(`_select_llm_commit_indices`),
+    선정된 커밋만 LLM을 시도한다. 선정된 커밋이 분석 전에 실패하면 그 슬롯은 다른 커밋에 넘어가지 않고
+    그대로 비게 된다(미리 확정된 집합이므로). 어느 모드든 커밋 처리(인덱싱/DB) 순서는 배치 순서 그대로다.
     """
     settings = get_settings()
     vector_store = get_vector_store()
@@ -161,6 +167,12 @@ async def _run(
     llm_attempts = 0
     capped_count = 0
     cap_logged = False
+    # size 모드에서만 미리 선정한 LLM 대상 인덱스 집합. order 모드는 None(기존 카운터 방식 유지:
+    # 분석 전에 실패한 커밋은 슬롯을 소모하지 않음).
+    cap_priority = getattr(settings, "commit_analysis_cap_priority", "order")
+    preselected_indices: set[int] | None = None
+    if llm_analysis_enabled and analysis_cap > 0 and cap_priority == "size":
+        preselected_indices = _select_llm_commit_indices(commits, analysis_cap, "size")
 
     for index, commit in enumerate(commits):
         added_vector_ids: list[str] = []
@@ -198,7 +210,11 @@ async def _run(
 
                 use_llm = True
                 if llm_analysis_enabled:
-                    if analysis_cap > 0 and llm_attempts >= analysis_cap:
+                    if preselected_indices is not None:
+                        capped = index not in preselected_indices
+                    else:
+                        capped = analysis_cap > 0 and llm_attempts >= analysis_cap
+                    if capped:
                         use_llm = False
                         capped_count += 1
                         if not cap_logged:
@@ -260,6 +276,38 @@ async def _run(
         embedding_input_chars_total, embedding_provider_tokens, embed_ms_total,
         len(failures), failures,
     )
+
+
+def _commit_size_key(commit: CommitData) -> tuple[int, int, int]:
+    """커밋 변경 규모 비교 키(클수록 큰 커밋). 순수 함수.
+
+    (변경 라인 수 합 additions+deletions(None=0), 변경 파일 수, diff 텍스트 길이) 순으로 비교한다.
+    라인 수가 없는 payload(legacy diff 등)는 마지막 diff 길이로 구분된다.
+    """
+    total_lines = sum(
+        (f.additions or 0) + (f.deletions or 0) for f in commit.changed_files
+    )
+    return (total_lines, len(commit.changed_files), len(_build_diff_text(commit)))
+
+
+def _select_llm_commit_indices(
+    commits: list[CommitData], cap: int, priority: str
+) -> set[int] | None:
+    """상한 적용 시 LLM 분석을 받을 커밋의 인덱스 집합을 반환합니다. 순수 함수.
+
+    cap <= 0이면 무제한이므로 None. `order`는 앞의 cap개, `size`는 `_commit_size_key`가 큰
+    상위 cap개(동률은 배치 순서가 앞선 커밋 우선, 안정 정렬).
+    """
+    if cap <= 0:
+        return None
+    if priority == "size":
+        ranked = sorted(
+            range(len(commits)),
+            key=lambda i: _commit_size_key(commits[i]),
+            reverse=True,
+        )
+        return set(ranked[:cap])
+    return set(range(min(cap, len(commits))))
 
 
 def _cleanup_vectors(vector_store, workspace_id: str, vector_ids: list[str]) -> None:
