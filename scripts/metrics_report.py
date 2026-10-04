@@ -182,7 +182,9 @@ def compute_cache_summary(records: list[dict]) -> dict[str, object] | None:
         return _percentile(values, 50), _percentile(values, 95)
 
     # LLM 재검증(cache_verify_*) 지표. 구버전 레코드는 필드가 없으므로 None으로 취급합니다.
-    verified = [r for r in enabled if r.get("cache_verify_result") is not None]
+    # "limit"은 일일 상한 소진으로 호출을 건너뛴 기록이라 호출 수에서 빼고 따로 셉니다.
+    verified = [r for r in enabled if r.get("cache_verify_result") not in (None, "limit")]
+    verify_limited_count = sum(1 for r in enabled if r.get("cache_verify_result") == "limit")
     verify_outcomes: dict[str, int] = {}
     for r in verified:
         outcome = str(r["cache_verify_result"])
@@ -195,6 +197,7 @@ def compute_cache_summary(records: list[dict]) -> dict[str, object] | None:
         "hit_rate": len(hits) / len(enabled) * 100,
         "verify_count": len(verified),
         "verify_outcomes": verify_outcomes,
+        "verify_limited_count": verify_limited_count,
         "verify_latency": percentiles(verified, "cache_verify_ms"),
         "verify_hit_count": verify_hit_count,
         "verify_hit_share": (verify_hit_count / len(hits) * 100) if hits else 0.0,
@@ -270,6 +273,8 @@ def render_markdown(records_by_event: dict[str, list[dict]]) -> str:
                         f"- 재검증 경유 hit 비율: {cache_summary['verify_hit_share']:.1f}% "
                         f"({cache_summary['verify_hit_count']}/{cache_summary['hit_count']})"
                     )
+                if cache_summary["verify_limited_count"]:
+                    lines.append(f"- 재검증 상한 소진(miss 처리): {cache_summary['verify_limited_count']}")
                 lines.append("")
                 lines.append("| 구분 | 지표 | p50(ms) | p95(ms) |")
                 lines.append("| --- | --- | --- | --- |")
