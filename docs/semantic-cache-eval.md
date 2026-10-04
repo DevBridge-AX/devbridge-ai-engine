@@ -286,7 +286,9 @@ python3 scripts/eval/cache_eval.py --from-cache <file> --direct-sweep --direct-t
   `purpose="cache_verify"` 이벤트로만 확인 가능하며, 과금 집계 반영은 Spring과 협의할 항목이다.
 - 재검증 타임아웃으로 취소된 호출은 `llm_calls`에 `error_type="CancelledError"`로 기록된다
   (이전에는 `error_type=null`·토큰 0의 성공 호출처럼 보였다). `chat_metrics`에는
-  `cache_verify_ms`/`cache_verify_result`가 남는다.
+  `cache_verify_ms`/`cache_verify_result`가 남는다. `cache_verify_result`는
+  `yes`/`no`/`invalid`/`error`/`timeout`/`limit`이며, `limit`은 일일 호출 상한
+  (`SEMANTIC_CACHE_VERIFY_DAILY_LIMIT`) 소진으로 호출을 건너뛴 경우다.
 
 ## 3회차 (검증 프롬프트 v2, 홀드아웃)
 

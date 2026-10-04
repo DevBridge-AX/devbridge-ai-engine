@@ -317,7 +317,7 @@ turn 1/2+ : rewritten_query ─► embed ─► cache.lookup ─┬─ hit  ─�
 - **관측성**: `chat_metrics`에 `cache_enabled`, `cache_hit`, `cache_similarity`,
   `cache_lookup_ms`가 기록되며 hit 시 `grounding_stage="cache"`입니다.
   LLM 재검증이 켜져 있으면 `cache_verify_ms`(재검증 호출 지연)와 `cache_verify_result`
-  (`yes`/`no`/`invalid`/`error`/`timeout`)도 hit·miss 양쪽 레코드에 기록되며, 재검증을
+  (`yes`/`no`/`invalid`/`error`/`timeout`/`limit`)도 hit·miss 양쪽 레코드에 기록되며, 재검증을
   호출하지 않은 요청은 둘 다 `null`입니다.
   `scripts/metrics_report.py`가 hit율, hit/miss별 `total_ms`·`ttft_ms` p50/p95, 재검증 결과 분포·지연·재검증 경유 hit 비율을 보여줍니다.
 - **질의 임베딩 taskType**: `EMBEDDING_QUERY_TASK_TYPE`(기본 비어 있음 = taskType 미전송)을 주면
@@ -351,8 +351,13 @@ turn 1/2+ : rewritten_query ─► embed ─► cache.lookup ─┬─ hit  ─�
   - `NO`/예외/타임아웃/해석 불가 응답은 모두 miss(fail-closed)로 일반 경로를 탑니다. 검증에 실패한
     후보는 `hits`/LRU가 갱신되지 않습니다(`lookup(min_similarity=...)`은 후보 구간에서 부수효과가
     없고, 검증 통과 시 `mark_hit`으로 확정).
-  - `CANDIDATE_THRESHOLD`가 `THRESHOLD`보다 크면 후보 구간이 없는 것으로 보고 재검증을 건너뜁니다
-    (기동 오류 없이 경고 로그만 남김).
+  - `CANDIDATE_THRESHOLD`가 `THRESHOLD`보다 크거나 같으면 후보 구간이 비어 재검증이 실행되지 않습니다
+    (기동 오류 없이 프로세스당 1회 경고 로그만 남기고 기존 경로로 동작. `check_verify_band`).
+  - **일일 호출 상한(비용 가드)**: `SEMANTIC_CACHE_VERIFY_DAILY_LIMIT`(기본 0 = 무제한). 양수면
+    프로세스 로컬 카운터로 하루(로컬 날짜) 재검증 LLM 호출 수를 제한합니다. 멀티 워커에서는
+    워커별로 적용되어 실효 상한은 N × 워커 수입니다. 소진되면 후보 구간 조회는 LLM 호출 없이 miss로
+    처리하고(`cache_verify_result="limit"`, `cache_verify_ms=null`) 일반 경로를 탑니다. 즉시 hit
+    (유사도 ≥ `THRESHOLD`)는 영향이 없고, 상한 소진 경고는 날짜당 1회만 남깁니다.
   - 관측: 검증 LLM 호출은 `llm_calls` 이벤트에 `purpose="cache_verify"`로 기록됩니다.
     `chat_metrics`에는 아직 검증 전용 필드가 없습니다(별도 작업).
   - **Spring 협의 항목**: 응답 계약은 변하지 않으므로 검증 호출의 토큰은 `done.token_usage`에
@@ -362,7 +367,7 @@ turn 1/2+ : rewritten_query ─► embed ─► cache.lookup ─┬─ hit  ─�
 - **설정**: `SEMANTIC_CACHE_ENABLED`(기본 false), `SEMANTIC_CACHE_THRESHOLD`(0.95),
   `SEMANTIC_CACHE_TTL_SECONDS`(3600), `SEMANTIC_CACHE_MAX_ENTRIES`(500, 워크스페이스당),
   `SEMANTIC_CACHE_VERIFY_ENABLED`(false), `SEMANTIC_CACHE_CANDIDATE_THRESHOLD`(0.86),
-  `SEMANTIC_CACHE_VERIFY_TIMEOUT_SECONDS`(3.0),
+  `SEMANTIC_CACHE_VERIFY_TIMEOUT_SECONDS`(3.0), `SEMANTIC_CACHE_VERIFY_DAILY_LIMIT`(0 = 무제한),
   `SEMANTIC_CACHE_VERIFY_PROMPT_VERSION`(`v1`|`v2`, 기본 `v2` — 3회차 홀드아웃 측정 근거, v1은 비교용).
 
 ## 5. DB 마이그레이션 (Alembic)
