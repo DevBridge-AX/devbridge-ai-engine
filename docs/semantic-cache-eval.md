@@ -388,6 +388,81 @@ python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<holdout-timesta
 - 튜닝셋에는 유사도 0.95 이상 different_intent 쌍이 없어 direct 구간 오적중이 0이고, direct 상향·항상 검증 모두 결과가 같다(검증 호출만 +1).
 - 오적중 원천(값만 다른 쌍, 0.957·0.961)은 홀드아웃에만 있으므로, L2 판단은 홀드아웃을 v2로 다시 수집(`--collect --verify`, LLM 30회)한 뒤 `--direct-sweep`으로 확인해야 한다.
 
+## 4회차 (실측 대기: L2·L3·L6)
+
+3회차 후속 과제(direct 임계치 상향/항상 검증, 임베딩 taskType, 재검증 on 라이브)를 실측하기 위한 결과 템플릿이다.
+아래 모든 수치는 **실험 환경 기준**이며 현재 모든 칸은 미실측이다. 실행 순서는 L2 -> L3 -> L6.
+
+### L2: 홀드아웃 v2 재수집 + direct 스윕 (실험 환경 기준)
+
+- 방법: 홀드아웃 30쌍을 검증 프롬프트 v2로 다시 수집(LLM 30회)하고 `--direct-sweep`으로 오프라인 재스윕한다.
+- L2 기준: false_hit_rate <= 2% AND hit_rate >= 40% (`meets_l2`)
+
+```bash
+RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify --verify-prompt-version v2 \
+    --dataset scripts/eval/datasets/cache_pairs_holdout.jsonl
+python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.jsonl --direct-sweep
+```
+
+- 원본 파일: `data/eval/cache-미실측.jsonl`, 검증 모델/프롬프트: 미실측 / v2, 임베딩: 미실측
+
+| mode/direct threshold | candidate | hit@0.80 | false hit | direct_hits_diff | meets_l2 |
+| --- | --- | --- | --- | --- | --- |
+| direct 0.95 | 0.80 | 미실측 | 미실측 | 미실측 | 미실측 |
+| direct 0.96 | 0.80 | 미실측 | 미실측 | 미실측 | 미실측 |
+| direct 0.97 | 0.80 | 미실측 | 미실측 | 미실측 | 미실측 |
+| direct 0.98 | 0.80 | 미실측 | 미실측 | 미실측 | 미실측 |
+| always_verify (항상 검증) | 0.80 | 미실측 | 미실측 | - | 미실측 |
+
+판정: 미실측 (meets_l2를 만족하는 행이 있는지, 홀드아웃 오적중 h016 0.961 / h018 0.957이 사라졌는지 기입)
+
+### L3: 임베딩 taskType=SEMANTIC_SIMILARITY (실험 환경 기준)
+
+- 방법: 같은 홀드아웃을 `--task-type SEMANTIC_SIMILARITY`로 재수집해 미지정(현행) 캐시와 same_intent 유사도 분포를 비교한다(임베딩 140건 규모, 임베딩 비용만 발생).
+
+```bash
+RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --task-type SEMANTIC_SIMILARITY \
+    --dataset scripts/eval/datasets/cache_pairs_holdout.jsonl
+python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.jsonl
+```
+
+| 항목 | taskType 미지정 (현행) | SEMANTIC_SIMILARITY |
+| --- | --- | --- |
+| 원본 파일 | 미실측 | 미실측 |
+| same_intent 유사도 p25 | 미실측 | 미실측 |
+| same_intent 유사도 median | 0.798 (3회차 홀드아웃) | 미실측 |
+| same_intent 유사도 p75 | 미실측 | 미실측 |
+| different_intent 유사도 max | 0.961 (3회차 홀드아웃) | 미실측 |
+| 후보 하한 0.80 미만 same 쌍 수 | 8/15 (3회차 홀드아웃) | 미실측 |
+| 최선 임계치 | 미실측 | 미실측 |
+| 최선 임계치 hit_rate | 미실측 | 미실측 |
+| 최선 임계치 false hit | 미실측 | 미실측 |
+
+판정: 미실측 (same_intent 분포 상향과 0.80 미만 쌍 감소 여부, different_intent 분포가 함께 올라 분리도가 개선되지 않았는지 기입)
+
+### L6: 재검증 on 라이브 2회차 (실험 환경 기준)
+
+- 방법: `test_semantic_cache_verify_path`로 재검증 on(v2, direct 0.95, candidate 0.80) hit 경로를 실제 호출한다(메인 약 10회 + 재검증 약 10회).
+
+```bash
+RUN_LIVE_LLM=1 uv run --extra dev python -m pytest -m live -q tests/live/test_semantic_cache_live.py -k verify
+```
+
+- 결과 위치: `data/live_runs/*.json`의 `persona_answers_preview.semantic_cache_verify` (실행일 미실측, 검증 모델 미실측)
+
+| 지표 (출력 필드) | 목표 | 실측 | 달성 여부 |
+| --- | --- | --- | --- |
+| hit 경로 total_ms p50 (`hit_path.total_ms`) | <= 2,000ms (`meets_l6`) | 미실측 | 미실측 |
+| hit 경로 total_ms p95 | 참고 | 미실측 | - |
+| cache_verify_ms p50 (`hit_path.verify_ms`) | 참고 | 미실측 | - |
+| 요청당 평균 LLM 토큰 (`mean_llm_tokens_per_request`, phase1 / phase2) | 참고 | 미실측 / 미실측 | - |
+| 재검증 호출 수 (`verify_calls`) | 참고 | 미실측 | - |
+| 재검증 호출당 평균 토큰 (`mean_verify_tokens_per_call`) | 참고 | 미실측 | - |
+| hit 수 / 재검증 hit 수 (`hit_count` / `verified_hit_count`) | 참고 | 미실측 / 미실측 | - |
+| NO 사례 p011 false hit | 0건 | 미실측 | 미실측 |
+
+판정: 미실측 (meets_l6, p011이 miss로 처리됐는지 `miss_after_no_total_ms`와 함께 기입)
+
 ## 후속 선택지
 
 - **질문 임베딩에 Gemini `taskType=SEMANTIC_SIMILARITY` 적용**: 문장 유사도에 맞춘 임베딩이라 same/different 분리도가 개선될 수 있음. 현재 embedder는 taskType을 지정하지 않고 검색용 임베딩과 분리해야 하므로 질문당 임베딩 1회 추가 비용.
