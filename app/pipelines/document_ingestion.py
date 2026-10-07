@@ -25,9 +25,22 @@ config.ingestion_parse_warn_ratio(기본 5%)를 초과하면 메트릭 result를
   변경이 필요합니다.
 - 현재 read_text()로 UTF-8 텍스트만 처리합니다. PDF 등 바이너리 포맷은 별도
   파서 도입이 필요합니다.
-- 청킹 중간 vector_store.add() 실패 시 MySQL에는 document_chunks가 남지 않지만
-  (rollback), 이미 vector_store에 추가된 항목은 자동으로 제거되지 않습니다.
-  완전한 원자성이 필요하면 보상 트랜잭션 패턴 도입이 필요합니다.
+- 완전한 분산 원자성(MySQL + 벡터 스토어)은 보장하지 않습니다. 아래 보상 로직은
+  best-effort이며, 커밋 이후 구간의 실패는 다루지 않습니다.
+
+재인덱싱(replace) 의미와 보상:
+- 같은 knowledge_document_id로 재실행하면 기존 DOCUMENT 청크(document_chunks)를 삭제하고
+  새 청크로 교체합니다(중복 행/벡터 방지). 삭제는 세션에서만 수행하며 커밋은 호출자가 합니다.
+- store 단계 실패 시 이번 실행에서 vector_store에 이미 추가한 벡터를 best-effort로 제거합니다.
+  MySQL은 rollback으로 기존 행이 복원되므로 기존 벡터는 지우지 않습니다(정합성 유지).
+- 기존 벡터의 삭제는 _run이 아니라 호출자(_ingest_and_mark)가 COMPLETED 커밋 성공 후에
+  best-effort로 수행합니다. 커밋이 실패하면 기존 행이 복원되고 기존 벡터도 그대로 남습니다.
+  커밋 후 삭제가 실패하면 Chroma에만 고아 벡터가 남으며(상태는 COMPLETED 유지), MySQL 행이
+  가리키지 않으므로 검색 결과에는 나오지 않습니다: 리트리버는 벡터 히트의 chunk_id를
+  document_chunks에서 조회해 행이 없으면 건너뜁니다. 다만 고아 벡터도 top_k 후보 슬롯을
+  차지할 수 있고 자동 정리되지는 않습니다.
+- 프로세스 단위 동시 실행 가드(_IN_FLIGHT)만 제공합니다. 다중 워커/인스턴스 간 중복 실행은
+  막지 못합니다.
 """
 
 import logging
@@ -35,7 +48,7 @@ import time
 import uuid
 from pathlib import Path
 
-from sqlalchemy import update
+from sqlalchemy import delete, select, update
 
 from app.config import get_settings
 from app.core.cache.semantic_cache import get_semantic_cache
@@ -48,6 +61,14 @@ from app.db.session import SessionLocal, log_embedding_usage
 from app.db.vector_store import get_vector_store
 
 logger = logging.getLogger(__name__)
+
+# 현재 프로세스에서 인덱싱 중인 knowledge_document_id 집합(중복 실행 방지용, 프로세스 단위).
+_IN_FLIGHT: set[str] = set()
+
+
+def is_ingestion_in_flight(document_id: str) -> bool:
+    """해당 문서가 이 프로세스에서 인덱싱 중이면 True."""
+    return document_id in _IN_FLIGHT
 
 
 async def ingest_document(
@@ -62,9 +83,35 @@ async def ingest_document(
 
     task_id/sensitivity_level은 청크에 접근 제어 스냅샷으로 복사됩니다(docs/access-control.md §3.3).
     """
+    if knowledge_document_id in _IN_FLIGHT:
+        logger.warning(
+            "document_ingestion skipped: already in flight knowledge_document_id=%s",
+            knowledge_document_id,
+        )
+        return
+
+    _IN_FLIGHT.add(knowledge_document_id)
+    try:
+        await _ingest_and_mark(
+            workspace_id, knowledge_document_id, file_path, doc_type, task_id, sensitivity_level
+        )
+    finally:
+        _IN_FLIGHT.discard(knowledge_document_id)
+
+
+async def _ingest_and_mark(
+    workspace_id: str,
+    knowledge_document_id: str,
+    file_path: str,
+    doc_type: str,
+    task_id: str | None,
+    sensitivity_level: str,
+) -> None:
+    """_run 실행 후 analysis_status를 COMPLETED/FAILED로 갱신합니다."""
+    old_vector_ids: list[str] = []
     with SessionLocal() as db:
         try:
-            await _run(
+            old_vector_ids = await _run(
                 db,
                 workspace_id,
                 knowledge_document_id,
@@ -90,6 +137,14 @@ async def ingest_document(
                 .values(analysis_status="FAILED")
             )
             db.commit()
+            return
+
+    # 커밋 성공 후에만 기존 벡터를 제거한다(실패해도 상태에는 영향 없음).
+    if old_vector_ids:
+        try:
+            _delete_vectors(get_vector_store(), old_vector_ids, workspace_id)
+        except Exception:
+            logger.warning("document_ingestion: old vector cleanup failed", exc_info=True)
 
 
 async def _run(
@@ -100,7 +155,8 @@ async def _run(
     doc_type: str,
     task_id: str | None = None,
     sensitivity_level: str = "normal",
-) -> None:
+) -> list[str]:
+    """청킹/임베딩/저장을 수행하고, 커밋 후 삭제해야 할 기존 벡터 id 목록을 반환합니다."""
     timer = StageTimer()
     total_start = time.perf_counter()
     file_bytes = _safe_file_size(file_path)
@@ -142,7 +198,7 @@ async def _run(
             embedding_provider_tokens=None,
             result="EMPTY", failure_stage=None, error_type=None,
         )
-        return
+        return []
 
     embedding_input_chars = sum(len(c.content) for c in chunks)
 
@@ -160,9 +216,29 @@ async def _run(
         raise
 
     vector_store = get_vector_store()
+    added_vector_ids: list[str] = []
+    old_vector_ids: list[str] = []
 
     try:
         with timer.measure("store_ms"):
+            # 재인덱싱: 같은 문서의 기존 청크를 새 청크로 교체한다(커밋은 호출자).
+            old_rows = db.execute(
+                select(DocumentChunk.vector_id).where(
+                    DocumentChunk.workspace_id == workspace_id,
+                    DocumentChunk.source_type == ChunkSourceType.DOCUMENT,
+                    DocumentChunk.source_id == knowledge_document_id,
+                )
+            ).all()
+            old_vector_ids = [r[0] for r in old_rows if r[0]]
+            if old_rows:
+                db.execute(
+                    delete(DocumentChunk).where(
+                        DocumentChunk.workspace_id == workspace_id,
+                        DocumentChunk.source_type == ChunkSourceType.DOCUMENT,
+                        DocumentChunk.source_id == knowledge_document_id,
+                    )
+                )
+
             pending: list[tuple[DocumentChunk, list[float], str]] = []
             for chunk, embedding in zip(chunks, result.embeddings):
                 vector_id = str(uuid.uuid4())
@@ -194,12 +270,15 @@ async def _run(
                     },
                     workspace_id=workspace_id,
                 )
+                added_vector_ids.append(vector_id)
 
             log_embedding_usage(db, workspace_id, result.embedding_model, result.total_tokens)
 
             get_bm25_manager().invalidate(workspace_id)
             get_semantic_cache().invalidate_workspace(workspace_id)
     except Exception as exc:
+        # 보상: 이번 실행에서 추가한 벡터만 제거한다(기존 벡터는 MySQL rollback으로 복원되는 행과 일치).
+        _delete_vectors(vector_store, added_vector_ids, workspace_id)
         _record_ingestion_metric(
             timer, total_start, workspace_id, knowledge_document_id, doc_type,
             file_bytes=file_bytes, char_count=char_count, chunk_count=len(chunks),
@@ -221,6 +300,18 @@ async def _run(
         embedding_provider_tokens=embedding_provider_tokens,
         result=result, failure_stage=None, error_type=None,
     )
+    return old_vector_ids
+
+
+def _delete_vectors(vector_store, vector_ids: list[str], workspace_id: str) -> None:
+    """벡터를 best-effort로 삭제합니다. 개별 실패는 로그만 남기고 무시합니다."""
+    for vector_id in vector_ids:
+        try:
+            vector_store.delete(vector_id, workspace_id)
+        except Exception:
+            logger.warning(
+                "document_ingestion: vector delete failed vector_id=%s", vector_id, exc_info=True
+            )
 
 
 # ---------------------------------------------------------------------------
