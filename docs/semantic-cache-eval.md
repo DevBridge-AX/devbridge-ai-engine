@@ -388,10 +388,10 @@ python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<holdout-timesta
 - 튜닝셋에는 유사도 0.95 이상 different_intent 쌍이 없어 direct 구간 오적중이 0이고, direct 상향·항상 검증 모두 결과가 같다(검증 호출만 +1).
 - 오적중 원천(값만 다른 쌍, 0.957·0.961)은 홀드아웃에만 있으므로, L2 판단은 홀드아웃을 v2로 다시 수집(`--collect --verify`, LLM 30회)한 뒤 `--direct-sweep`으로 확인해야 한다.
 
-## 4회차 (실측 대기: L2·L3·L6)
+## 4회차 (L2·L3·L6)
 
 3회차 후속 과제(direct 임계치 상향/항상 검증, 임베딩 taskType, 재검증 on 라이브)를 실측하기 위한 결과 템플릿이다.
-아래 모든 수치는 **실험 환경 기준**이며 현재 모든 칸은 미실측이다. 실행 순서는 L2 -> L3 -> L6.
+아래 모든 수치는 **실험 환경 기준**이다. 실행일 2026-10-27, 실행 순서는 L2 -> L3 -> L6.
 
 ### L2: 홀드아웃 v2 재수집 + direct 스윕 (실험 환경 기준)
 
@@ -404,17 +404,22 @@ RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify --verify-pr
 python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.jsonl --direct-sweep
 ```
 
-- 원본 파일: `data/eval/cache-미실측.jsonl`, 검증 모델/프롬프트: 미실측 / v2, 임베딩: 미실측
+- 원본 파일: `data/eval/cache-20261027-154000.jsonl`, 검증 모델/프롬프트: `claude-haiku-4-5-20251001` / v2, 임베딩: `gemini-embedding-2` (taskType 미지정)
+- 사전 확인: 3회차 홀드아웃 캐시(`cache-holdout-v1v2-20261002-111744.jsonl`)의 v2 레코드로 오프라인 재스윕한 결과와 아래 라이브 재수집 결과가 전 행 동일했다.
 
 | mode/direct threshold | candidate | hit@0.80 | false hit | direct_hits_diff | meets_l2 |
 | --- | --- | --- | --- | --- | --- |
-| direct 0.95 | 0.80 | 미실측 | 미실측 | 미실측 | 미실측 |
-| direct 0.96 | 0.80 | 미실측 | 미실측 | 미실측 | 미실측 |
-| direct 0.97 | 0.80 | 미실측 | 미실측 | 미실측 | 미실측 |
-| direct 0.98 | 0.80 | 미실측 | 미실측 | 미실측 | 미실측 |
-| always_verify (항상 검증) | 0.80 | 미실측 | 미실측 | - | 미실측 |
+| direct 0.95 | 0.80 | 40.0% (6/15) | 13.3% (2/15) | 2 | - |
+| direct 0.96 | 0.80 | 40.0% (6/15) | 6.7% (1/15) | 1 | - |
+| direct 0.97 | 0.80 | 40.0% (6/15) | 0.0% | 0 | O |
+| direct 0.98 | 0.80 | 40.0% (6/15) | 0.0% | 0 | O |
+| always_verify (항상 검증) | 0.80 | 40.0% (6/15) | 0.0% | - | O |
 
-판정: 미실측 (meets_l2를 만족하는 행이 있는지, 홀드아웃 오적중 h016 0.961 / h018 0.957이 사라졌는지 기입)
+판정: **L2 기준 달성.** direct를 0.97 이상으로 올리거나 항상 검증 모드를 쓰면 hit@0.80 40%를 유지한 채 오적중 0%가 된다. 홀드아웃 오적중 h016(0.961)·h018(0.957)은 v2 검증기가 둘 다 NO로 판정해 사라졌다.
+
+- 비용: 검증 호출이 19회(direct 0.95) -> 21회(0.97 이상/항상 검증)로 2회 늘어난다(30쌍 기준). 0.97·0.98·항상 검증은 이 홀드아웃에서 결과가 같아 구분되지 않는다.
+- 검증기 단독: 정확도 93.3%(30쌍, 3회차 v2 90.0%), false YES 0, false NO h005·h009. 지연 p50/p95 686/877ms, 호출당 prompt 726 / completion 4 토큰.
+- 채택 기준(hit_rate >= 50%)은 어느 행도 미달이다. 남은 병목은 후보 하한 0.80 미만 same_intent 8/15로, 검증 이전 단계(임베딩 유사도)에서 걸러진다.
 
 ### L3: 임베딩 taskType=SEMANTIC_SIMILARITY (실험 환경 기준)
 
