@@ -281,20 +281,25 @@ RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline
 - 승인 시 코드 변경 전에 `.env`로 먼저 적용해 확인할 수 있다: `GROUNDING_PROMPT_VERSION=v2-strict`, `GROUNDING_JUDGE_TOP_K=3`.
 - 위 결론은 실험 환경(코퍼스 4문서, 40건) 기준이므로, 실제 워크스페이스 데이터에서의 재검증이 필요하다.
 
-## 3회차: 재현성 반복 측정 (L4, 실측 대기)
+## 3회차: 재현성 반복 측정 (L4)
 
 `--repeat`로 strict_top3의 92.5%(accuracy)가 재현되는지 측정하는 결과 템플릿이다. 아래 모든 수치는
-**실험 환경(코퍼스 4문서, 40건) 기준**이며 현재 모든 칸은 미실측이다.
+**실험 환경(코퍼스 4문서, 40건) 기준**이다.
 
-- 명령: `RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline,strict_top3 --repeat 2` (LLM 호출 = 40 x 2 x 2 = 160회, 반복 횟수는 비용과 함께 조정)
+- 명령: `RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline,strict_top3 --repeat 3` (LLM 호출 = 40 x 2 x 3 = 240회. sd 산출을 위해 3회로 실행)
 - 오프라인 리포트: `python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-<timestamp>.jsonl` (끝의 `# 반복 측정` 섹션)
-- 실행일 / 원본 파일 / 판정 모델 / 임계치: 미실측 / `data/eval/grounding-미실측.jsonl` / 미실측 / 0.35
+- 실행일 / 원본 파일 / 판정 모델 / 임계치: 2026-10-27 / `data/eval/grounding-20261027-154738.jsonl` / `gemini-2.5-flash-lite` / 0.35
 
 | variant | repeats | accuracy mean±sd (min~max) | not-groundable recall mean±sd | flip rate (flip 케이스 ids) |
 | --- | --- | --- | --- | --- |
-| baseline | 미실측 | 미실측 | 미실측 | 미실측 |
-| strict_top3 | 미실측 | 미실측 | 미실측 | 미실측 |
+| baseline | 3 | 84.2%±1.4% (82.5%~85.0%) | 55.6%±4.8% | 2/40 (5.0%): a004, a008 |
+| strict_top3 | 3 | 95.8%±1.4% (95.0%~97.5%) | 94.4%±4.8% | 1/40 (2.5%): a003 |
 
 - 참고(이전 단일 실행, 2026-10-01): baseline 80.0% / recall 41.7%, strict_top3 92.5% / recall 83.3%
 
-판정 (92.5% 재현 여부): 미실측 (strict_top3 accuracy 평균이 92.5%에 근접하고 baseline과 격차가 sd보다 큰지, flip rate가 낮은지 기입)
+판정 (92.5% 재현 여부): **재현됨 (이전보다 소폭 높음).** strict_top3 평균 95.8%로 최저값(95.0%)도 이전 단일 실행 92.5%를 넘었다. baseline과의 격차 11.6%p는 sd(1.4%p)의 8배 이상이라 변동으로 설명되지 않는다. not-groundable recall도 94.4%로 이전 83.3%보다 높다.
+
+- flip(반복 간 판정이 바뀐 케이스)은 strict_top3 1/40(a003, ambiguous), baseline 2/40으로 판정은 대체로 안정적이다.
+- groundable 오차단은 두 변형 모두 1/28로 반복 3회 내내 같았다(ambiguous a002가 두 변형·3회 모두 LLM 판정 not-groundable로 막힘. 고정 오류라 sd 0).
+- 이전 단일 실행 대비 수치가 오른 이유는 원인을 확정하지 못했다(판정 모델 버전 변동 또는 표본 변동 가능). 이번 실행 내 변동(sd 1.4%p)만으로는 92.5 -> 95.8%의 차이를 설명하기 어렵다.
+- 비용: 평균 prompt 토큰 baseline 1,991 / strict_top3 1,914 (strict_top3가 약 4% 적음), 평균 지연 약 830ms로 동일.
