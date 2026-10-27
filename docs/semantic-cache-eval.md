@@ -433,17 +433,20 @@ python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.json
 
 | 항목 | taskType 미지정 (현행) | SEMANTIC_SIMILARITY |
 | --- | --- | --- |
-| 원본 파일 | 미실측 | 미실측 |
-| same_intent 유사도 p25 | 미실측 | 미실측 |
-| same_intent 유사도 median | 0.798 (3회차 홀드아웃) | 미실측 |
-| same_intent 유사도 p75 | 미실측 | 미실측 |
-| different_intent 유사도 max | 0.961 (3회차 홀드아웃) | 미실측 |
-| 후보 하한 0.80 미만 same 쌍 수 | 8/15 (3회차 홀드아웃) | 미실측 |
-| 최선 임계치 | 미실측 | 미실측 |
-| 최선 임계치 hit_rate | 미실측 | 미실측 |
-| 최선 임계치 false hit | 미실측 | 미실측 |
+| 원본 파일 | `cache-20261027-154000.jsonl` | `cache-20261027-154009.jsonl` |
+| same_intent 유사도 p25 | 0.7589 | 0.7589 |
+| same_intent 유사도 median | 0.7980 | 0.7980 |
+| same_intent 유사도 p75 | 0.8540 | 0.8540 |
+| different_intent 유사도 max | 0.9610 | 0.9610 |
+| 후보 하한 0.80 미만 same 쌍 수 | 8/15 | 8/15 |
+| 최선 임계치 | 0.97 | 0.97 |
+| 최선 임계치 hit_rate | 0.0% | 0.0% |
+| 최선 임계치 false hit | 0.0% | 0.0% |
 
-판정: 미실측 (same_intent 분포 상향과 0.80 미만 쌍 감소 여부, different_intent 분포가 함께 올라 분리도가 개선되지 않았는지 기입)
+판정: **효과 없음 (실험 불성립).** 30쌍 전부 유사도가 소수점 끝자리까지 동일했다. 추가 확인으로 같은 문장을 taskType 미지정·RETRIEVAL_QUERY·CLASSIFICATION·RETRIEVAL_DOCUMENT로 각각 임베딩했더니 벡터가 모두 같았다. 요청 본문에는 `taskType`이 들어가므로(`app/core/embeddings/embedder.py`), GMS 경유 `gemini-embedding-2`에서는 taskType이 결과에 반영되지 않는다. 프록시가 필드를 버리는지, 모델이 지원하지 않는지는 확인하지 못했다.
+
+- 결론: 현재 환경에서 `EMBEDDING_QUERY_TASK_TYPE` 설정은 효과가 없으므로 켜지 않는다.
+- 임베딩 규모: 홀드아웃 30쌍 = 60건 (템플릿의 140건은 과대 추정).
 
 ### L6: 재검증 on 라이브 2회차 (실험 환경 기준)
 
