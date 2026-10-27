@@ -388,10 +388,10 @@ python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<holdout-timesta
 - 튜닝셋에는 유사도 0.95 이상 different_intent 쌍이 없어 direct 구간 오적중이 0이고, direct 상향·항상 검증 모두 결과가 같다(검증 호출만 +1).
 - 오적중 원천(값만 다른 쌍, 0.957·0.961)은 홀드아웃에만 있으므로, L2 판단은 홀드아웃을 v2로 다시 수집(`--collect --verify`, LLM 30회)한 뒤 `--direct-sweep`으로 확인해야 한다.
 
-## 4회차 (실측 대기: L2·L3·L6)
+## 4회차 (L2·L3·L6)
 
 3회차 후속 과제(direct 임계치 상향/항상 검증, 임베딩 taskType, 재검증 on 라이브)를 실측하기 위한 결과 템플릿이다.
-아래 모든 수치는 **실험 환경 기준**이며 현재 모든 칸은 미실측이다. 실행 순서는 L2 -> L3 -> L6.
+아래 모든 수치는 **실험 환경 기준**이다. 실행일 2026-10-27, 실행 순서는 L2 -> L3 -> L6.
 
 ### L2: 홀드아웃 v2 재수집 + direct 스윕 (실험 환경 기준)
 
@@ -404,17 +404,22 @@ RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify --verify-pr
 python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.jsonl --direct-sweep
 ```
 
-- 원본 파일: `data/eval/cache-미실측.jsonl`, 검증 모델/프롬프트: 미실측 / v2, 임베딩: 미실측
+- 원본 파일: `data/eval/cache-20261027-154000.jsonl`, 검증 모델/프롬프트: `claude-haiku-4-5-20251001` / v2, 임베딩: `gemini-embedding-2` (taskType 미지정)
+- 사전 확인: 3회차 홀드아웃 캐시(`cache-holdout-v1v2-20261002-111744.jsonl`)의 v2 레코드로 오프라인 재스윕한 결과와 아래 라이브 재수집 결과가 전 행 동일했다.
 
 | mode/direct threshold | candidate | hit@0.80 | false hit | direct_hits_diff | meets_l2 |
 | --- | --- | --- | --- | --- | --- |
-| direct 0.95 | 0.80 | 미실측 | 미실측 | 미실측 | 미실측 |
-| direct 0.96 | 0.80 | 미실측 | 미실측 | 미실측 | 미실측 |
-| direct 0.97 | 0.80 | 미실측 | 미실측 | 미실측 | 미실측 |
-| direct 0.98 | 0.80 | 미실측 | 미실측 | 미실측 | 미실측 |
-| always_verify (항상 검증) | 0.80 | 미실측 | 미실측 | - | 미실측 |
+| direct 0.95 | 0.80 | 40.0% (6/15) | 13.3% (2/15) | 2 | - |
+| direct 0.96 | 0.80 | 40.0% (6/15) | 6.7% (1/15) | 1 | - |
+| direct 0.97 | 0.80 | 40.0% (6/15) | 0.0% | 0 | O |
+| direct 0.98 | 0.80 | 40.0% (6/15) | 0.0% | 0 | O |
+| always_verify (항상 검증) | 0.80 | 40.0% (6/15) | 0.0% | - | O |
 
-판정: 미실측 (meets_l2를 만족하는 행이 있는지, 홀드아웃 오적중 h016 0.961 / h018 0.957이 사라졌는지 기입)
+판정: **L2 기준 달성.** direct를 0.97 이상으로 올리거나 항상 검증 모드를 쓰면 hit@0.80 40%를 유지한 채 오적중 0%가 된다. 홀드아웃 오적중 h016(0.961)·h018(0.957)은 v2 검증기가 둘 다 NO로 판정해 사라졌다.
+
+- 비용: 검증 호출이 19회(direct 0.95) -> 21회(0.97 이상/항상 검증)로 2회 늘어난다(30쌍 기준). 0.97·0.98·항상 검증은 이 홀드아웃에서 결과가 같아 구분되지 않는다.
+- 검증기 단독: 정확도 93.3%(30쌍, 3회차 v2 90.0%), false YES 0, false NO h005·h009. 지연 p50/p95 686/877ms, 호출당 prompt 726 / completion 4 토큰.
+- 채택 기준(hit_rate >= 50%)은 어느 행도 미달이다. 남은 병목은 후보 하한 0.80 미만 same_intent 8/15로, 검증 이전 단계(임베딩 유사도)에서 걸러진다.
 
 ### L3: 임베딩 taskType=SEMANTIC_SIMILARITY (실험 환경 기준)
 
@@ -428,17 +433,20 @@ python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.json
 
 | 항목 | taskType 미지정 (현행) | SEMANTIC_SIMILARITY |
 | --- | --- | --- |
-| 원본 파일 | 미실측 | 미실측 |
-| same_intent 유사도 p25 | 미실측 | 미실측 |
-| same_intent 유사도 median | 0.798 (3회차 홀드아웃) | 미실측 |
-| same_intent 유사도 p75 | 미실측 | 미실측 |
-| different_intent 유사도 max | 0.961 (3회차 홀드아웃) | 미실측 |
-| 후보 하한 0.80 미만 same 쌍 수 | 8/15 (3회차 홀드아웃) | 미실측 |
-| 최선 임계치 | 미실측 | 미실측 |
-| 최선 임계치 hit_rate | 미실측 | 미실측 |
-| 최선 임계치 false hit | 미실측 | 미실측 |
+| 원본 파일 | `cache-20261027-154000.jsonl` | `cache-20261027-154009.jsonl` |
+| same_intent 유사도 p25 | 0.7589 | 0.7589 |
+| same_intent 유사도 median | 0.7980 | 0.7980 |
+| same_intent 유사도 p75 | 0.8540 | 0.8540 |
+| different_intent 유사도 max | 0.9610 | 0.9610 |
+| 후보 하한 0.80 미만 same 쌍 수 | 8/15 | 8/15 |
+| 최선 임계치 | 0.97 | 0.97 |
+| 최선 임계치 hit_rate | 0.0% | 0.0% |
+| 최선 임계치 false hit | 0.0% | 0.0% |
 
-판정: 미실측 (same_intent 분포 상향과 0.80 미만 쌍 감소 여부, different_intent 분포가 함께 올라 분리도가 개선되지 않았는지 기입)
+판정: **효과 없음 (실험 불성립).** 30쌍 전부 유사도가 소수점 끝자리까지 동일했다. 추가 확인으로 같은 문장을 taskType 미지정·RETRIEVAL_QUERY·CLASSIFICATION·RETRIEVAL_DOCUMENT로 각각 임베딩했더니 벡터가 모두 같았다. 요청 본문에는 `taskType`이 들어가므로(`app/core/embeddings/embedder.py`), GMS 경유 `gemini-embedding-2`에서는 taskType이 결과에 반영되지 않는다. 프록시가 필드를 버리는지, 모델이 지원하지 않는지는 확인하지 못했다.
+
+- 결론: 현재 환경에서 `EMBEDDING_QUERY_TASK_TYPE` 설정은 효과가 없으므로 켜지 않는다.
+- 임베딩 규모: 홀드아웃 30쌍 = 60건 (템플릿의 140건은 과대 추정).
 
 ### L6: 재검증 on 라이브 2회차 (실험 환경 기준)
 
@@ -448,20 +456,23 @@ python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.json
 RUN_LIVE_LLM=1 uv run --extra dev python -m pytest -m live -q tests/live/test_semantic_cache_live.py -k verify
 ```
 
-- 결과 위치: `data/live_runs/*.json`의 `persona_answers_preview.semantic_cache_verify` (실행일 미실측, 검증 모델 미실측)
+- 결과 위치: `data/live_runs/20261027-154158.json`의 `persona_answers_preview.semantic_cache_verify` (실행일 2026-10-27, 검증 모델 `claude-haiku-4-5-20251001`, 메인 `claude-sonnet-4-6`, 그라운딩 `gemini-2.5-flash-lite`)
 
 | 지표 (출력 필드) | 목표 | 실측 | 달성 여부 |
 | --- | --- | --- | --- |
-| hit 경로 total_ms p50 (`hit_path.total_ms`) | <= 2,000ms (`meets_l6`) | 미실측 | 미실측 |
-| hit 경로 total_ms p95 | 참고 | 미실측 | - |
-| cache_verify_ms p50 (`hit_path.verify_ms`) | 참고 | 미실측 | - |
-| 요청당 평균 LLM 토큰 (`mean_llm_tokens_per_request`, phase1 / phase2) | 참고 | 미실측 / 미실측 | - |
-| 재검증 호출 수 (`verify_calls`) | 참고 | 미실측 | - |
-| 재검증 호출당 평균 토큰 (`mean_verify_tokens_per_call`) | 참고 | 미실측 | - |
-| hit 수 / 재검증 hit 수 (`hit_count` / `verified_hit_count`) | 참고 | 미실측 / 미실측 | - |
-| NO 사례 p011 false hit | 0건 | 미실측 | 미실측 |
+| hit 경로 total_ms p50 (`hit_path.total_ms`) | <= 2,000ms (`meets_l6`) | 1,274.8ms | 달성 |
+| hit 경로 total_ms p95 | 참고 | 1,489.4ms | - |
+| cache_verify_ms p50 (`hit_path.verify_ms`) | 참고 | 684.7ms (p95 920.1) | - |
+| 요청당 평균 LLM 토큰 (`mean_llm_tokens_per_request`, phase1 / phase2) | 참고 | 4,805.6 / 0.0 | - |
+| 재검증 호출 수 (`verify_calls`) | 참고 | 8 | - |
+| 재검증 호출당 평균 토큰 (`mean_verify_tokens_per_call`) | 참고 | 729.9 | - |
+| hit 수 / 재검증 hit 수 (`hit_count` / `verified_hit_count`) | 참고 | 8 / 8 | - |
+| NO 사례 p011 false hit | 0건 | 0건 (p011은 same_intent, 이번엔 YES -> 정답 hit) | 달성 (NO 경로 미관측) |
 
-판정: 미실측 (meets_l6, p011이 miss로 처리됐는지 `miss_after_no_total_ms`와 함께 기입)
+판정: **L6 기준 달성** (`meets_l6` true). 재검증을 켠 hit 경로 p50 1,275ms로 목표 2s 이내이며, 1회차 miss 경로 p50 6,782ms 대비 약 5.3배 빠르다(재검증 없는 hit 604ms보다는 약 670ms 느림, 대부분 검증 호출 지연). hit 요청의 메인 토큰은 0이고 재검증 비용은 호출당 약 730 토큰(haiku)이다.
+
+- p011 주의: 데이터셋상 p011은 **same_intent** 쌍(15분 SLA 풀어쓰기 vs "SLA" 축약)이다. 3회차 오프라인에서 v1·v2 모두 false NO였던 사례를 "NO 경로" 측정용으로 쓴 것이라, 템플릿의 "false hit" 항목은 정확히는 "NO -> miss 경로 관측"이다. 이번 실행에서는 v2가 YES를 반환해 정답 hit가 됐고 `miss_after_no_total_ms`는 비었다. 즉 NO -> miss 경로 지연은 이번에 측정되지 않았다.
+- 같은 쌍·같은 프롬프트(v2)에서 실행마다 판정이 달라졌다(3회차 NO -> 이번 YES). 검증기 판정은 경계 사례에서 결정적이지 않다.
 
 ## 후속 선택지
 
