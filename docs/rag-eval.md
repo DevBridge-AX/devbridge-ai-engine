@@ -79,16 +79,14 @@ python3 scripts/eval/rag_eval.py --from-cache data/eval/rag-YYYYmmdd-HHMMSS.json
 
 ## 결과
 
-1회차 미실행 (실측 대기: L1). 아래는 실행 후 수치만 채우는 템플릿이며 모든 칸은 미실측이다.
-
-### 1회차 (실측 대기) - 실험 환경 기준
+### 1회차 - 실험 환경 기준
 
 모든 수치는 **실험 환경(가상 문서 10건, 질의 30건) 기준**이다.
 
-- 실행일: 미실측
-- 원본 파일: `data/eval/rag-미실측.jsonl` (`data/`는 `.gitignore` 대상)
-- 임베딩 모델: 미실측 (`--live` 실행 시 기록된 `embedding_model` 확인)
-- 임베딩 task type: 미실측 (현행 embedder 기본값인지 확인)
+- 실행일: 2026-10-27
+- 원본 파일: `data/eval/rag-20261027-153819.jsonl` (`data/`는 `.gitignore` 대상)
+- 임베딩 모델: `gemini-embedding-2` (`v1`)
+- 임베딩 task type: 미지정 (현행 embedder 기본값, `EMBEDDING_QUERY_TASK_TYPE` 미설정)
 - 명령: `RUN_LIVE_LLM=1 python3 scripts/eval/rag_eval.py --live --top-k 5`
 - 리포트: `python3 scripts/eval/rag_eval.py --from-cache data/eval/rag-<timestamp>.jsonl`
 
@@ -96,30 +94,34 @@ python3 scripts/eval/rag_eval.py --from-cache data/eval/rag-YYYYmmdd-HHMMSS.json
 
 | 지표 | 목표 (채택/판정 기준) | 실측 | 달성 여부 |
 | --- | --- | --- | --- |
-| single_doc recall@5 | >= 90% | 미실측 | 미실측 |
-| ACL leak (acl_task + acl_restricted만) | = 0 | 미실측 | 미실측 |
-| forbidden 노출 (전체 카테고리, 참고용) | 판정 기준 없음 (distractor는 순위 혼동 참고) | 미실측 | - |
-| distractor hit@1 | >= 75% | 미실측 | 미실측 |
-| out_of_corpus top similarity 최대 | 판정 기준 없음 (그라운딩 임계치 검토 시 참고) | 미실측 | - |
+| single_doc recall@5 | >= 90% | 100.0% (12/12) | 달성 |
+| ACL leak (acl_task + acl_restricted만) | = 0 | 0 | 달성 |
+| forbidden 노출 (전체 카테고리, 참고용) | 판정 기준 없음 (distractor는 순위 혼동 참고) | 4 (모두 distractor, 2위) | - |
+| distractor hit@1 | >= 75% | 100.0% (4/4) | 달성 |
+| out_of_corpus top similarity 최대 | 판정 기준 없음 (그라운딩 임계치 검토 시 참고) | 0.589 | - |
 
 #### 카테고리별
 
 | 카테고리 | n | 채점 n | recall@5 | MRR | hit@1 | ACL leak | forbidden 노출 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| single_doc | 12 | 미실측 | 미실측 | 미실측 | 미실측 | - | 미실측 |
-| cross_doc | 3 | 미실측 | 미실측 | 미실측 | 미실측 | - | 미실측 |
-| distractor | 4 | 미실측 | 미실측 | 미실측 | 미실측 | - | 미실측 |
-| acl_task | 5 | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 |
-| acl_restricted | 3 | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 |
-| out_of_corpus | 3 | 미실측 | - | - | - | - | 미실측 |
-| overall | 30 | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 | 미실측 |
+| single_doc | 12 | 12 | 100.0% | 1.000 | 100.0% | - | 0 |
+| cross_doc | 3 | 3 | 100.0% | 1.000 | 100.0% | - | 0 |
+| distractor | 4 | 4 | 100.0% | 1.000 | 100.0% | - | 4 |
+| acl_task | 5 | 2 | 100.0% | 1.000 | 100.0% | 0 | 0 |
+| acl_restricted | 3 | 1 | 100.0% | 1.000 | 100.0% | 0 | 0 |
+| out_of_corpus | 3 | 0 | - | - | - | - | 0 |
+| overall | 30 | 22 | 100.0% | 1.000 | 100.0% | 0 | 4 |
 
-out_of_corpus top similarity: 평균 미실측 / 최대 미실측
+out_of_corpus top similarity: 평균 0.568 / 최대 0.589
 
 #### 결론
 
-- 미실측 (실행 후 기입)
+- 판정 기준 3개(single_doc recall@5, ACL leak, distractor hit@1)를 모두 달성했다. 채점 대상 22건 전부 정답 문서가 1위(MRR 1.000).
+- distractor 4건은 모두 정답 1위, forbidden 문서 2위였다. 1·2위 유사도 차이는 0.041~0.066으로 크지 않아, 문서가 늘면 순위가 뒤집힐 여지가 있다.
+- ACL 필터는 검색 단계에서 접근 불가 문서를 완전히 배제했다(leak 0).
+- out_of_corpus 최대 유사도 0.589는 그라운딩 1차 필터 임계치(`GROUNDING_SIMILARITY_THRESHOLD` 0.35)보다 높다. 유사도만으로는 범위 밖 질의를 거를 수 없고 LLM 판정(v2-strict)에 의존한다.
 
 #### 후속
 
-- 미실측 (실행 후 기입)
+- recall 미달이 없어 리랭커(R-2)·재검색(R-3) 도입 근거는 현재 문서 셋 규모에서는 없다. 문서 셋이 10건으로 작아 천장 효과 가능성이 있으므로, 문서 수를 늘린 2회차에서 distractor 순위 마진을 다시 본다.
+- 그라운딩 유사도 임계치 상향 검토 시 out_of_corpus 최대 0.589와 정답 1위 유사도 분포를 함께 비교한다(임계치만 올리면 정답 질의도 탈락할 수 있음).
