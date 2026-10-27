@@ -456,20 +456,23 @@ python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.json
 RUN_LIVE_LLM=1 uv run --extra dev python -m pytest -m live -q tests/live/test_semantic_cache_live.py -k verify
 ```
 
-- 결과 위치: `data/live_runs/*.json`의 `persona_answers_preview.semantic_cache_verify` (실행일 미실측, 검증 모델 미실측)
+- 결과 위치: `data/live_runs/20261027-154158.json`의 `persona_answers_preview.semantic_cache_verify` (실행일 2026-10-27, 검증 모델 `claude-haiku-4-5-20251001`, 메인 `claude-sonnet-4-6`, 그라운딩 `gemini-2.5-flash-lite`)
 
 | 지표 (출력 필드) | 목표 | 실측 | 달성 여부 |
 | --- | --- | --- | --- |
-| hit 경로 total_ms p50 (`hit_path.total_ms`) | <= 2,000ms (`meets_l6`) | 미실측 | 미실측 |
-| hit 경로 total_ms p95 | 참고 | 미실측 | - |
-| cache_verify_ms p50 (`hit_path.verify_ms`) | 참고 | 미실측 | - |
-| 요청당 평균 LLM 토큰 (`mean_llm_tokens_per_request`, phase1 / phase2) | 참고 | 미실측 / 미실측 | - |
-| 재검증 호출 수 (`verify_calls`) | 참고 | 미실측 | - |
-| 재검증 호출당 평균 토큰 (`mean_verify_tokens_per_call`) | 참고 | 미실측 | - |
-| hit 수 / 재검증 hit 수 (`hit_count` / `verified_hit_count`) | 참고 | 미실측 / 미실측 | - |
-| NO 사례 p011 false hit | 0건 | 미실측 | 미실측 |
+| hit 경로 total_ms p50 (`hit_path.total_ms`) | <= 2,000ms (`meets_l6`) | 1,274.8ms | 달성 |
+| hit 경로 total_ms p95 | 참고 | 1,489.4ms | - |
+| cache_verify_ms p50 (`hit_path.verify_ms`) | 참고 | 684.7ms (p95 920.1) | - |
+| 요청당 평균 LLM 토큰 (`mean_llm_tokens_per_request`, phase1 / phase2) | 참고 | 4,805.6 / 0.0 | - |
+| 재검증 호출 수 (`verify_calls`) | 참고 | 8 | - |
+| 재검증 호출당 평균 토큰 (`mean_verify_tokens_per_call`) | 참고 | 729.9 | - |
+| hit 수 / 재검증 hit 수 (`hit_count` / `verified_hit_count`) | 참고 | 8 / 8 | - |
+| NO 사례 p011 false hit | 0건 | 0건 (p011은 same_intent, 이번엔 YES -> 정답 hit) | 달성 (NO 경로 미관측) |
 
-판정: 미실측 (meets_l6, p011이 miss로 처리됐는지 `miss_after_no_total_ms`와 함께 기입)
+판정: **L6 기준 달성** (`meets_l6` true). 재검증을 켠 hit 경로 p50 1,275ms로 목표 2s 이내이며, 1회차 miss 경로 p50 6,782ms 대비 약 5.3배 빠르다(재검증 없는 hit 604ms보다는 약 670ms 느림, 대부분 검증 호출 지연). hit 요청의 메인 토큰은 0이고 재검증 비용은 호출당 약 730 토큰(haiku)이다.
+
+- p011 주의: 데이터셋상 p011은 **same_intent** 쌍(15분 SLA 풀어쓰기 vs "SLA" 축약)이다. 3회차 오프라인에서 v1·v2 모두 false NO였던 사례를 "NO 경로" 측정용으로 쓴 것이라, 템플릿의 "false hit" 항목은 정확히는 "NO -> miss 경로 관측"이다. 이번 실행에서는 v2가 YES를 반환해 정답 hit가 됐고 `miss_after_no_total_ms`는 비었다. 즉 NO -> miss 경로 지연은 이번에 측정되지 않았다.
+- 같은 쌍·같은 프롬프트(v2)에서 실행마다 판정이 달라졌다(3회차 NO -> 이번 YES). 검증기 판정은 경계 사례에서 결정적이지 않다.
 
 ## 후속 선택지
 
