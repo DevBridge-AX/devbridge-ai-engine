@@ -58,10 +58,10 @@ distractor 쌍이다. 기존 `tests/live/fixtures/corpus`와 주제가 겹치지
 
 ```bash
 # live: 임베딩 API 호출 (RUN_LIVE_LLM=1 필수)
-RUN_LIVE_LLM=1 python3 scripts/eval/rag_eval.py --live [--limit N] [--top-k 5]
+RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/rag_eval.py --live [--limit N] [--top-k 5]
 
 # 저장된 결과 집계 (API 호출 없음)
-python3 scripts/eval/rag_eval.py --from-cache data/eval/rag-YYYYmmdd-HHMMSS.jsonl
+PYTHONPATH=. python3 scripts/eval/rag_eval.py --from-cache data/eval/rag-YYYYmmdd-HHMMSS.jsonl
 ```
 
 - 비용: 임베딩만 발생한다. 시드 10문서(청크 단위 임베딩) + 질의 30건(질의당 1회). LLM 호출은 없다.
@@ -87,8 +87,8 @@ python3 scripts/eval/rag_eval.py --from-cache data/eval/rag-YYYYmmdd-HHMMSS.json
 - 원본 파일: `data/eval/rag-20261027-153819.jsonl` (`data/`는 `.gitignore` 대상)
 - 임베딩 모델: `gemini-embedding-2` (`v1`)
 - 임베딩 task type: 미지정 (현행 embedder 기본값, `EMBEDDING_QUERY_TASK_TYPE` 미설정)
-- 명령: `RUN_LIVE_LLM=1 python3 scripts/eval/rag_eval.py --live --top-k 5`
-- 리포트: `python3 scripts/eval/rag_eval.py --from-cache data/eval/rag-<timestamp>.jsonl`
+- 명령: `RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/rag_eval.py --live --top-k 5`
+- 리포트: `PYTHONPATH=. python3 scripts/eval/rag_eval.py --from-cache data/eval/rag-<timestamp>.jsonl`
 
 #### 전체 요약
 

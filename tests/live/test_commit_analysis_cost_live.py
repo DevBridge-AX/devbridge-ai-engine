@@ -45,7 +45,12 @@ _BUCKETS = ("small", "medium", "large")
 @pytest.fixture(scope="module", autouse=True)
 def commit_analysis_cap_env(live_env):
     """이 모듈 동안만 AI_ANALYSIS_MODE=llm, 상한=_CAP으로 전환하고 종료 후 원복합니다."""
-    keys = {"AI_ANALYSIS_MODE": "llm", "COMMIT_ANALYSIS_MAX_PER_BATCH": str(_CAP)}
+    keys = {
+        "AI_ANALYSIS_MODE": "llm",
+        "COMMIT_ANALYSIS_MAX_PER_BATCH": str(_CAP),
+        # E1 병렬화 실측: 외부에서 지정하지 않으면 1(순차, 현행 동작)
+        "COMMIT_ANALYSIS_CONCURRENCY": os.environ.get("COMMIT_ANALYSIS_CONCURRENCY", "1"),
+    }
     originals = {key: os.environ.get(key) for key in keys}
     os.environ.update(keys)
     get_settings.cache_clear()
@@ -175,6 +180,7 @@ async def test_commit_analysis_cost_with_cap(live_env, live_run_recorder, tmp_pa
     settings = get_settings()
     assert settings.ai_analysis_mode == "llm"
     assert settings.commit_analysis_max_per_batch == _CAP
+    concurrency = settings.commit_analysis_concurrency
 
     metrics_dir = Path(live_env["metrics_dir"])
     expected_llm_calls = min(_COMMIT_COUNT, _CAP)
@@ -225,6 +231,7 @@ async def test_commit_analysis_cost_with_cap(live_env, live_run_recorder, tmp_pa
 
     # 가정: provider의 llm_calls 레코드에는 커밋 식별자가 없으므로, 배치가 커밋을 순차 처리하고
     # 커밋당 LLM 시도가 정확히 1회(레코드 1건)라는 점에 의존해 레코드 i를 커밋 i에 대응시킵니다.
+    # (동시성 > 1이면 레코드가 호출 완료 순서라 커밋별 대응은 근사치이고 집계만 유효합니다.)
     rows = []
     for i, call in enumerate(new_calls):
         commit_text = git_ingestion._build_commit_text(commits[i])
@@ -260,11 +267,16 @@ async def test_commit_analysis_cost_with_cap(live_env, live_run_recorder, tmp_pa
     summary = {
         "model": settings.main_model,
         "cap": _CAP,
+        "concurrency": concurrency,
         "commit_count": _COMMIT_COUNT,
         "llm_calls": batch["analysis_llm_count"],
         "capped": batch["analysis_capped_count"],
         "batch_total_ms": batch.get("total_ms"),
         "batch_embed_ms": batch.get("embed_ms"),
+        "batch_analysis_ms": batch.get("analysis_ms"),
+        # 429(rate limit)는 _analyze_commit이 fallback으로 흡수하므로 llm_calls에서만 관측된다.
+        "rate_limited": sum(1 for c in new_calls if c.get("http_status") == 429),
+        "errors": sum(1 for c in new_calls if c.get("error_type")),
         "per_commit": rows,
         "aggregate_overall": _aggregate(rows),
         "aggregate_by_bucket": {
@@ -278,3 +290,5 @@ async def test_commit_analysis_cost_with_cap(live_env, live_run_recorder, tmp_pa
     live_run_recorder["commit_analysis_cost"] = summary
     print("\n=== 커밋 분석 비용 실측(L5) ===")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+    assert summary["errors"] == 0

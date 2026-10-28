@@ -15,17 +15,17 @@ LLM 2차 판정을 라벨셋(scripts/eval/datasets/grounding_cases.jsonl)으로 
     # 1) 라이브 수집 (실 GMS API 호출, 비용 발생) — tmp 워크스페이스를 시드하고
     #    케이스마다 retriever.retrieve() + (임계치 무관) call_grounding()을 호출해
     #    결과를 캐시 jsonl로 저장합니다.
-    RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live
-    RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --limit 5   # 스모크용 소량 실행
+    RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/grounding_eval.py --live
+    RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/grounding_eval.py --live --limit 5   # 스모크용 소량 실행
 
     # 1-b) 판정 변형 비교(G1) — 케이스당 검색 1회 + 변형마다 판정 1회(변형 수만큼 비용 증가).
     #      --variants 기본값은 VARIANTS 전체(baseline,strict,top3,strict_top3,strict_top3_cap).
-    RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline,strict
+    RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/grounding_eval.py --live --variants baseline,strict
 
     # 1-c) 재현성 측정(L4) — 변형마다 판정을 N번 반복. 검색은 케이스당 1회(결정적),
     #      LLM 호출 수 = 케이스 수 x 변형 수 x N (비용 N배). --live에서만 사용 가능.
     #      예: 40케이스 x 2변형 x 2회 = 160회.
-    RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline,strict_top3 --repeat 2
+    RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/grounding_eval.py --live --variants baseline,strict_top3 --repeat 2
 
     # 2) 오프라인 스윕 (API 호출 없음) — 캐시된 결과로 임계치 0.20~0.60을 스윕합니다.
     #    캐시에 변형이 여러 개면 baseline 스윕에 더해 변형 비교 표(임계치 기본값은
@@ -33,8 +33,8 @@ LLM 2차 판정을 라벨셋(scripts/eval/datasets/grounding_cases.jsonl)으로 
     #    갈린 케이스 표를 출력합니다. variant 필드가 없는 레코드(A4 캐시)는 baseline입니다.
     #    캐시에 repeat가 2개 이상이면 위 섹션은 repeat 0 레코드만 쓰고, 끝에 반복 측정
     #    섹션(variant별 mean±sd/min~max, 판정 불안정 케이스)을 덧붙입니다.
-    python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-20260930-120000.jsonl
-    python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-....jsonl --threshold 0.35
+    PYTHONPATH=. python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-20260930-120000.jsonl
+    PYTHONPATH=. python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-....jsonl --threshold 0.35
 
 캐시 레코드 스키마(jsonl 1줄 = 케이스x변형 1건):
     {variant, id, category, expected_groundable, top_similarity, llm_is_groundable,

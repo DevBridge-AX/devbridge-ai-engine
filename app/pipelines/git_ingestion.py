@@ -21,9 +21,11 @@ app.core.metrics.record_metric("git_ingestion", ...)으로 기록합니다.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import httpx
@@ -46,6 +48,18 @@ logger = logging.getLogger(__name__)
 MAX_ANALYSIS_CHARS = 8000
 
 
+@dataclass
+class _IndexedCommit:
+    """1단계(인덱싱)를 마친 커밋. 2단계 분석과 3단계 upsert까지 들고 간다."""
+
+    index: int
+    git_commit: GitCommit
+    commit: CommitData
+    commit_text: str
+    use_llm: bool
+    primary_vector_id: str | None
+
+
 async def ingest_git_commits(
     workspace_id: str,
     source_id: str | None,
@@ -59,7 +73,10 @@ async def ingest_git_commits(
     """
     total_start = time.perf_counter()
     # 커밋 분석 LLM 호출 상한 집계(_run이 채움). 예외 경로에서는 0으로 남습니다.
-    analysis_stats = {"llm_count": 0, "capped_count": 0}
+    # analysis_ms/concurrency는 2단계(병렬 분석) 벽시계 시간과 적용된 동시성(없으면 None).
+    analysis_stats: dict[str, int | float | None] = {
+        "llm_count": 0, "capped_count": 0, "analysis_ms": None, "concurrency": None,
+    }
 
     with SessionLocal() as db:
         try:
@@ -103,6 +120,8 @@ async def ingest_git_commits(
                 failed_commit_count=failed_commit_count,
                 analysis_llm_count=analysis_stats["llm_count"],
                 analysis_capped_count=analysis_stats["capped_count"],
+                analysis_ms=analysis_stats.get("analysis_ms"),
+                analysis_concurrency=analysis_stats.get("concurrency"),
             )
         except Exception as exc:
             logger.exception("git_ingestion failed: workspace_id=%s", workspace_id)
@@ -124,13 +143,19 @@ async def _run(
     source_id: str | None,
     commits: list[CommitData],
     sensitivity_level: str = "normal",
-    analysis_stats: dict[str, int] | None = None,
+    analysis_stats: dict[str, int | float | None] | None = None,
 ) -> tuple[int, str, int, int, int, int | None, float, int, list[tuple[int, str]]]:
     """커밋 단위 부분 성공으로 인덱싱합니다.
 
-    커밋 1건 = SAVEPOINT 1개. 한 커밋이 실패하면 해당 SAVEPOINT만 롤백하고(GIT_COMMITS/
-    청크/분석 행 모두 남지 않음), 그 커밋이 벡터스토어에 이미 쓴 벡터는 삭제한 뒤 다음
-    커밋을 계속 처리합니다. 성공분은 호출자의 db.commit()으로 확정됩니다.
+    3단계로 처리합니다.
+    1) 인덱싱(순차): 커밋 1건 = SAVEPOINT 1개. GIT_COMMITS/청크/벡터 생성과 LLM 사용 여부(상한) 판정.
+       한 커밋이 실패하면 해당 SAVEPOINT만 롤백하고, 그 커밋이 벡터스토어에 이미 쓴 벡터는 삭제한 뒤
+       다음 커밋을 계속 처리합니다(분석 안 함).
+    2) 분석(병렬): `COMMIT_ANALYSIS_CONCURRENCY` 동시성으로 `_analyze_commit`만 병렬 실행합니다
+       (DB 접근 없음). 예외가 나온 커밋은 failures에 기록하고 3단계를 건너뜁니다.
+    3) upsert(순차): 커밋별 SAVEPOINT로 분석 행을 저장합니다. 실패하면 해당 upsert만 롤백하고
+       failures에 기록하며, 인덱싱된 커밋 행/청크/벡터는 남깁니다(분석 행만 없음).
+    성공분은 호출자의 db.commit()으로 확정됩니다.
 
     반환: (total_tokens, last_model, new_chunk_count, skipped_chunk_count,
     embedding_input_chars, embedding_provider_tokens(실측, 커밋 전체 합산; 실제로 임베딩을
@@ -141,7 +166,8 @@ async def _run(
     커밋만 LLM 분석 경로를 시도하고, 나머지는 LLM 호출 없이 fallback 휴리스틱으로 분석합니다
     (임베딩/인덱싱은 모든 커밋에 대해 그대로 수행). 시도 횟수는 LLM 호출이 실패해 fallback으로
     떨어진 경우에도 센다(실패한 시도도 호출 비용이 발생하므로). `analysis_stats`가 주어지면
-    `llm_count`(LLM 경로 시도 수)와 `capped_count`(상한으로 fallback 강제된 커밋 수)를 채웁니다.
+    `llm_count`(LLM 경로 시도 수)와 `capped_count`(상한으로 fallback 강제된 커밋 수),
+    `analysis_ms`(2단계 벽시계 시간), `concurrency`(적용된 동시성)를 채웁니다.
 
     `COMMIT_ANALYSIS_CAP_PRIORITY`: `order`(기본)는 위 설명대로 처리 순서상 앞의 N번째 시도까지를
     LLM 대상으로 하며, 분석 전에 실패해 롤백된 커밋은 슬롯을 소모하지 않는다(카운터 방식).
@@ -161,6 +187,8 @@ async def _run(
     embedding_provider_tokens_complete = True
     embed_ms_total = 0.0
     failures: list[tuple[int, str]] = []
+    indexed: list[_IndexedCommit] = []
+    concurrency = max(int(getattr(settings, "commit_analysis_concurrency", 1) or 1), 1)
 
     analysis_cap = max(int(getattr(settings, "commit_analysis_max_per_batch", 0) or 0), 0)
     llm_analysis_enabled = _is_llm_analysis_enabled(settings)
@@ -229,17 +257,6 @@ async def _run(
                 if analysis_stats is not None:
                     analysis_stats["llm_count"] = llm_attempts
                     analysis_stats["capped_count"] = capped_count
-
-                analysis = await _analyze_commit(
-                    commit=commit, commit_text=commit_text, use_llm=use_llm
-                )
-                _upsert_commit_analysis(
-                    db=db,
-                    workspace_id=workspace_id,
-                    git_commit=git_commit,
-                    analysis=analysis,
-                    vector_id=primary_vector_id,
-                )
         except Exception as exc:
             # 커밋 해시는 로그에만 남기고 메시지/diff 원문은 남기지 않는다.
             logger.exception(
@@ -257,13 +274,60 @@ async def _run(
         skipped_chunk_count += commit_skipped_chunks
         embedding_input_chars_total += commit_input_chars
         embed_ms_total += commit_embed_ms
+        indexed.append(
+            _IndexedCommit(
+                index=index,
+                git_commit=git_commit,
+                commit=commit,
+                commit_text=commit_text,
+                use_llm=use_llm,
+                primary_vector_id=primary_vector_id,
+            )
+        )
 
         if commit_provider_tokens is None:
             embedding_provider_tokens_complete = False
         elif embedding_provider_tokens_complete:
             embedding_provider_tokens_total += commit_provider_tokens
 
-    if len(failures) < len(commits):
+    # 2단계: LLM 분석만 병렬 실행(DB 접근 없음).
+    analysis_start = time.perf_counter()
+    results = await _analyze_commits_concurrently(indexed, concurrency)
+    analysis_ms = (time.perf_counter() - analysis_start) * 1000
+    if analysis_stats is not None:
+        analysis_stats["analysis_ms"] = analysis_ms
+        analysis_stats["concurrency"] = concurrency
+
+    # 3단계: 분석 결과를 순차 upsert. 실패해도 인덱싱 결과(커밋 행/청크/벡터)는 남긴다.
+    for item, analysis in zip(indexed, results):
+        if isinstance(analysis, BaseException):
+            logger.error(
+                "git_ingestion: commit analysis failed. workspace_id=%s index=%d commit_hash=%s",
+                workspace_id, item.index, item.commit.commit_hash,
+                exc_info=(type(analysis), analysis, analysis.__traceback__),
+            )
+            failures.append((item.index, type(analysis).__name__))
+            continue
+        try:
+            with db.begin_nested():
+                _upsert_commit_analysis(
+                    db=db,
+                    workspace_id=workspace_id,
+                    git_commit=item.git_commit,
+                    analysis=analysis,
+                    vector_id=item.primary_vector_id,
+                )
+        except Exception as exc:
+            logger.exception(
+                "git_ingestion: analysis upsert failed, savepoint rolled back. workspace_id=%s index=%d commit_hash=%s",
+                workspace_id, item.index, item.commit.commit_hash,
+            )
+            failures.append((item.index, type(exc).__name__))
+
+    failures.sort(key=lambda f: f[0])
+
+    # 인덱싱된 커밋이 하나라도 있으면(분석 단계 실패여도 청크/벡터는 남으므로) 검색 캐시를 무효화한다.
+    if indexed:
         get_bm25_manager().invalidate(workspace_id)
         get_semantic_cache().invalidate_workspace(workspace_id)
 
@@ -276,6 +340,29 @@ async def _run(
         embedding_input_chars_total, embedding_provider_tokens, embed_ms_total,
         len(failures), failures,
     )
+
+
+async def _analyze_commits_concurrently(
+    items: list[_IndexedCommit], concurrency: int
+) -> list[dict | BaseException]:
+    """`_analyze_commit`을 동시성 `concurrency`로 실행하고 items와 같은 순서의 결과를 반환합니다.
+
+    개별 예외는 결과 리스트에 예외 객체로 담긴다(return_exceptions). 단 배치 취소
+    (`asyncio.CancelledError`)는 삼키지 않고 다시 raise한다. concurrency=1이면 순서대로 하나씩 실행된다.
+    """
+    sem = asyncio.Semaphore(max(concurrency, 1))
+
+    async def one(item: _IndexedCommit) -> dict:
+        async with sem:
+            return await _analyze_commit(
+                commit=item.commit, commit_text=item.commit_text, use_llm=item.use_llm
+            )
+
+    results = await asyncio.gather(*(one(item) for item in items), return_exceptions=True)
+    for result in results:
+        if isinstance(result, asyncio.CancelledError):
+            raise result
+    return list(results)
 
 
 def _commit_size_key(commit: CommitData) -> tuple[int, int, int]:
@@ -337,6 +424,8 @@ def _record_git_ingestion_metric(
     failed_commit_count: int = 0,
     analysis_llm_count: int = 0,
     analysis_capped_count: int = 0,
+    analysis_ms: float | None = None,
+    analysis_concurrency: int | None = None,
 ) -> None:
     """Git 커밋 인덱싱 1건(배치)의 지표를 기록합니다. 커밋 메시지/diff는 포함하지 않습니다."""
     total_ms = (time.perf_counter() - total_start) * 1000
@@ -348,6 +437,9 @@ def _record_git_ingestion_metric(
         # 상한 때문에 LLM 없이 fallback으로 처리된 커밋 수. 상한 미사용(0) 시 capped는 0.
         "analysis_llm_count": analysis_llm_count,
         "analysis_capped_count": analysis_capped_count,
+        # 2단계(LLM 분석 병렬 구간) 벽시계 시간과 적용된 동시성(COMMIT_ANALYSIS_CONCURRENCY). 외부 예외 시 None.
+        "analysis_ms": analysis_ms,
+        "analysis_concurrency": analysis_concurrency,
         "new_chunk_count": new_chunk_count,
         "skipped_chunk_count": skipped_chunk_count,
         # 임베딩 API로 전송한 청크 텍스트 길이 합(배치 전체 누적; 외부 예외 시에만 None).
