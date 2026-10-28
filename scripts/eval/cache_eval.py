@@ -16,31 +16,31 @@ false_hit_rate(다른 질문을 hit = 오답)를 스윕해 권고 임계치를 �
 사용법:
     # 1) 라이브 수집 (실 임베딩 API 호출) — q1+q2 80건을 한 번에 임베딩하고
     #    쌍별 코사인 유사도를 캐시 jsonl로 저장합니다.
-    RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect
-    RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --limit 5   # 스모크용 소량 실행
+    RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/cache_eval.py --collect
+    RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/cache_eval.py --collect --limit 5   # 스모크용 소량 실행
 
     # 1-b) 라이브 수집 + LLM 재검증 — 임베딩 후 모든 쌍에 대해 verify_same_question(q1, q2)을
     #      순차 호출(REWRITE_MODEL, 쌍당 1회)해 후보 임계치를 오프라인으로 스윕할 수 있게 합니다.
-    RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify
+    RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/cache_eval.py --collect --verify
 
     # 1-c) 프롬프트 버전 비교 — 쉼표 목록이면 각 쌍을 버전마다 1회씩 검증하고 (쌍, 버전)당
     #      레코드 1건을 씁니다(유사도는 쌍당 1회만 계산해 복사). 홀드아웃 데이터셋 예:
-    RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify --verify-prompt-version v1,v2
-    RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify --verify-prompt-version v1,v2 --dataset scripts/eval/datasets/cache_pairs_holdout.jsonl
+    RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/cache_eval.py --collect --verify --verify-prompt-version v1,v2
+    RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/cache_eval.py --collect --verify --verify-prompt-version v1,v2 --dataset scripts/eval/datasets/cache_pairs_holdout.jsonl
 
     # 1-d) 임베딩 taskType 실험 — q1/q2를 taskType을 붙여 임베딩합니다(문서 인덱싱과 무관한
     #      쌍별 유사도 비교용). 운영 설정 EMBEDDING_QUERY_TASK_TYPE 변경 전 홀드아웃으로 먼저 평가하세요.
-    RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --task-type SEMANTIC_SIMILARITY --dataset scripts/eval/datasets/cache_pairs_holdout.jsonl
+    RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/cache_eval.py --collect --task-type SEMANTIC_SIMILARITY --dataset scripts/eval/datasets/cache_pairs_holdout.jsonl
 
     # 2) 오프라인 스윕 (API 호출 없음) — 캐시된 유사도로 임계치 0.85~0.99를 스윕합니다.
     #    verify 필드가 있는 캐시면 "임계치 + LLM 재검증" 스윕 섹션이 추가됩니다.
-    python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-20260930-120000.jsonl
-    python3 scripts/eval/cache_eval.py --from-cache <file> --direct-threshold 0.95
+    PYTHONPATH=. python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-20260930-120000.jsonl
+    PYTHONPATH=. python3 scripts/eval/cache_eval.py --from-cache <file> --direct-threshold 0.95
 
     # 2-b) direct 임계치 스윕 + "항상 검증" 모드 (API 호출 없음, verify 필드가 있는 캐시 필요).
     #      direct 0.95~0.98 및 direct 지름길 없는 항상 검증을 candidate 0.80/0.85로 비교합니다.
-    python3 scripts/eval/cache_eval.py --from-cache <file> --direct-sweep
-    python3 scripts/eval/cache_eval.py --from-cache <file> --direct-sweep --direct-thresholds 0.95,0.97
+    PYTHONPATH=. python3 scripts/eval/cache_eval.py --from-cache <file> --direct-sweep
+    PYTHONPATH=. python3 scripts/eval/cache_eval.py --from-cache <file> --direct-sweep --direct-thresholds 0.95,0.97
 
 캐시 레코드 스키마(jsonl 1줄 = 질문 쌍 1건):
     {id, kind, q1, q2, similarity, embedding_model, embedding_task_type}

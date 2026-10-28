@@ -35,7 +35,7 @@ workspace_id, db, top_k=5)`로 검색하고, **임계치와 무관하게 항상*
 스윕을 API 재호출 없이 오프라인으로 할 수 있습니다.
 
 ```bash
-RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live
+RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/grounding_eval.py --live
 ```
 
 `RUN_LIVE_LLM=1`과 비어있지 않은 `GMS_API_KEY`가 모두 필요합니다(`tests/live/conftest.py`와
@@ -45,13 +45,13 @@ RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live
 스모크(소량) 실행:
 
 ```bash
-RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --limit 5
+RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/grounding_eval.py --live --limit 5
 ```
 
 ### 2) 오프라인 임계치 스윕 (API 호출 없음)
 
 ```bash
-python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-20260930-120000.jsonl
+PYTHONPATH=. python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-20260930-120000.jsonl
 ```
 
 임계치 `0.20`~`0.60`(`0.05` 간격)을 스윕해 markdown 표를 출력합니다. `--dataset`으로
@@ -186,12 +186,12 @@ final = (top_similarity >= threshold) AND effective_llm_is_groundable
 
 ```bash
 # 라이브 수집 (비용 발생, RUN_LIVE_LLM=1 + GMS_API_KEY 필요). --variants 기본값은 전체
-RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live
-RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline,strict
+RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/grounding_eval.py --live
+RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/grounding_eval.py --live --variants baseline,strict
 
 # 오프라인 비교 (API 호출 없음). 임계치 기본값은 settings.grounding_similarity_threshold(0.35)
-python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-{timestamp}.jsonl
-python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-{timestamp}.jsonl --threshold 0.35
+PYTHONPATH=. python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-{timestamp}.jsonl
+PYTHONPATH=. python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-{timestamp}.jsonl --threshold 0.35
 ```
 
 캐시 레코드에는 `variant`, `prompt_chars` 필드가 추가되며, `variant`가 없는 기존(A4)
@@ -203,7 +203,7 @@ LLM 판정(flash-lite)은 비결정적이고 검색은 결정적입니다. stric
 재현되는지 보려면 `--live`에 `--repeat N`을 줍니다(N >= 1, 기본 1, `--live` 전용).
 
 ```bash
-RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline,strict_top3 --repeat 2
+RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/grounding_eval.py --live --variants baseline,strict_top3 --repeat 2
 ```
 
 - 케이스당 검색은 1회, 변형마다 판정을 N번 호출합니다. **LLM 호출 수 = 케이스 수 x 변형 수 x N**
@@ -286,8 +286,8 @@ RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline
 `--repeat`로 strict_top3의 92.5%(accuracy)가 재현되는지 측정하는 결과 템플릿이다. 아래 모든 수치는
 **실험 환경(코퍼스 4문서, 40건) 기준**이다.
 
-- 명령: `RUN_LIVE_LLM=1 python3 scripts/eval/grounding_eval.py --live --variants baseline,strict_top3 --repeat 3` (LLM 호출 = 40 x 2 x 3 = 240회. sd 산출을 위해 3회로 실행)
-- 오프라인 리포트: `python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-<timestamp>.jsonl` (끝의 `# 반복 측정` 섹션)
+- 명령: `RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/grounding_eval.py --live --variants baseline,strict_top3 --repeat 3` (LLM 호출 = 40 x 2 x 3 = 240회. sd 산출을 위해 3회로 실행)
+- 오프라인 리포트: `PYTHONPATH=. python3 scripts/eval/grounding_eval.py --from-cache data/eval/grounding-<timestamp>.jsonl` (끝의 `# 반복 측정` 섹션)
 - 실행일 / 원본 파일 / 판정 모델 / 임계치: 2026-10-27 / `data/eval/grounding-20261027-154738.jsonl` / `gemini-2.5-flash-lite` / 0.35
 
 | variant | repeats | accuracy mean±sd (min~max) | not-groundable recall mean±sd | flip rate (flip 케이스 ids) |

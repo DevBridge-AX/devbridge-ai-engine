@@ -7,8 +7,8 @@ RAG 검색 품질 + 접근 제어 평가 CLI (X2).
 - --from-cache <path>: 저장된 jsonl로 지표를 집계해 markdown 표를 출력합니다(API 호출 없음).
 
 사용법:
-    RUN_LIVE_LLM=1 python3 scripts/eval/rag_eval.py --live [--limit N] [--top-k 5]
-    python3 scripts/eval/rag_eval.py --from-cache data/eval/rag-....jsonl
+    RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/rag_eval.py --live [--limit N] [--top-k 5]
+    PYTHONPATH=. python3 scripts/eval/rag_eval.py --from-cache data/eval/rag-....jsonl
 
 자세한 내용은 docs/rag-eval.md 를 참고하세요.
 """

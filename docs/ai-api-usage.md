@@ -156,7 +156,7 @@ JSON 파싱 오류를 던지면 `analyze_document()`가 이를 잡아 fallback �
 | 용도 | Git 커밋의 요약/영향범위/리스크/다음조치 생성 |
 | 호출 함수 | `call_structured()` → MAIN_MODEL |
 | 현재 모드 | `AI_ANALYSIS_MODE` 설정에 따름 |
-| 환경변수 | `AI_ANALYSIS_MODE`, `COMMIT_ANALYSIS_MAX_PER_BATCH`, `COMMIT_ANALYSIS_CAP_PRIORITY` |
+| 환경변수 | `AI_ANALYSIS_MODE`, `COMMIT_ANALYSIS_MAX_PER_BATCH`, `COMMIT_ANALYSIS_CAP_PRIORITY`, `COMMIT_ANALYSIS_CONCURRENCY` |
 | 호출 시점 | Git 커밋 인덱싱 시 (`pipelines/git_ingestion.py`) |
 
 **한국어 출력 규칙 / PII 최소화**: 커밋 분석 system prompt에 문서 분석과 동일한 취지의
@@ -186,6 +186,16 @@ push 시 비용/지연이 선형으로 증가하므로 `COMMIT_ANALYSIS_MAX_PER_
 - 상한 초과 시 배치당 1회 info 로그(workspace_id, cap, 커밋 총수)를 남기고, `git_ingestion`
   메트릭에 `analysis_llm_count`(LLM 시도 수)와 `analysis_capped_count`(상한으로 fallback
   강제된 커밋 수)가 기록됩니다.
+
+**동시성 — `COMMIT_ANALYSIS_CONCURRENCY`**(기본 `1`, 최소 1): 배치 내 커밋 분석 LLM 호출의
+동시 실행 수입니다. 처리는 3단계로 나뉩니다: 인덱싱(순차) -> LLM 분석(이 값만큼 병렬) ->
+분석 upsert(순차). DB 접근은 항상 순차이고 병렬 범위는 LLM 호출(`_analyze_commit`)뿐입니다.
+- `1`(기본): 순차 호출, 기존 동작과 같은 호출 순서·결과.
+- 분석 단계에서 예외가 나거나 upsert가 실패한 커밋은 `failures`(배치 결과 PARTIAL)에 기록하며,
+  이 경우 인덱싱된 커밋 행·청크·벡터는 남고 분석 행만 없습니다.
+- 429(rate limit)는 `_analyze_commit`이 fallback으로 흡수하므로 조용히 규칙 기반 결과가 됩니다.
+  값을 올린 뒤 `llm_calls`의 `http_status=429` 건수를 확인하고, 발생하면 값을 낮추세요.
+- `git_ingestion` 메트릭에 `analysis_ms`(LLM 분석 단계 벽시계 시간)와 `analysis_concurrency`가 기록됩니다.
 
 **건당 토큰 비용** (라이브 검증 1회차 기준, purpose=`commit_analysis` 집계):
 - prompt_tokens 평균: 673 (2026-10-01 라이브 1회차, claude-sonnet-4-6, 표본 3건(소형 diff))
@@ -264,6 +274,7 @@ EMBEDDING_MODEL=gemini-embedding-2    # 임베딩 생성
 AI_ANALYSIS_MODE=fallback             # 문서 분석 모드 (fallback | llm)
 COMMIT_ANALYSIS_MAX_PER_BATCH=0       # push 1회당 커밋 LLM 분석 상한 (0=무제한, 초과분 fallback)
 COMMIT_ANALYSIS_CAP_PRIORITY=order    # 상한 적용 시 LLM 대상 선정 기준 (order | size)
+# COMMIT_ANALYSIS_CONCURRENCY=1       # 커밋 분석 LLM 호출 동시성 (1=순차, N=최대 N건 동시)
 DOCUMENT_ANALYSIS_MODEL=fallback-v1   # 문서 분석 표시용 모델명
 ```
 
@@ -371,6 +382,24 @@ RUN_LIVE_LLM=1 python3 -m pytest -m live -q tests/live/test_commit_analysis_cost
   - 지연: 커밋 분석은 순차 호출이고, 지연은 diff 크기보다 출력 길이(약 330 토큰)에 좌우돼 버킷과 무관하게 건당 6~9s다. N=10이면 LLM 구간 약 71s, 임베딩 포함 배치 약 89s다. 지연은 N에 선형 비례하므로 N=20이면 약 2.5~3분이다.
   - 따라서 N은 비용보다 push당 처리 시간 예산으로 정하는 것이 맞다. 인덱싱이 백그라운드로 처리되는지, Spring 쪽 타임아웃이 있는지 확인 후 확정한다.
   - 참고: 소형 diff는 글자당 토큰이 1.16으로 중·대형(0.62~0.70)보다 높다. 프롬프트 고정부(지시문)가 차지하는 비중이 커서다.
+
+#### 병렬화 실측 (E1)
+
+`COMMIT_ANALYSIS_CONCURRENCY`를 올렸을 때의 배치 지연을 같은 합성 커밋 12건(상한 `_CAP=10`)으로 비교한다.
+실행: `RUN_LIVE_LLM=1 COMMIT_ANALYSIS_CONCURRENCY=4 python3 -m pytest -m live -q -s tests/live/test_commit_analysis_cost_live.py`
+(C=1 기준값은 위 L5 결과 89,275ms를 재사용). 모든 수치는 **실험 환경 기준**이다. 원본: `data/live_runs/20261028-100243.json`.
+
+| 동시성 C | `batch_total_ms` | LLM 구간 `analysis_ms` | L5(C=1) 대비 감소율 | `rate_limited` (429) | `errors` | 실행일 / 모델 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 (L5) | 89,275ms | 약 71s (추정: total - embed) | - | - (당시 미집계, 호출 10건 모두 ok) | 0 | 2026-10-27 / `claude-sonnet-4-6` |
+| 4 | 35,158ms | 23,341ms | 60.6% | 0 | 0 | 2026-10-28 / `claude-sonnet-4-6` |
+| 2 | 미실측 (C=4에서 429가 없어 생략) | - | - | - | - | - |
+
+- 판정 기준: C=4에서 `batch_total_ms`가 L5 대비 50% 이상 감소, `errors=0`, `rate_limited=0`, 분석 행 12개 모두 `risk_level` 허용값.
+- 결과: C=4에서 LLM 구간이 약 71s -> 23.3s(약 3.0배), 배치 전체는 89.3s -> 35.2s(60.6% 감소)로 판정 기준을 충족한다. 건당 지연 p50 7.9s / p95 8.9s(L5 7.1s / 8.7s)로 병렬화에 따른 건당 지연 증가는 미미하다. 토큰은 커밋당 평균 2,929(L5 2,907)로 동일 수준.
+- 임베딩 구간도 16.7s -> 9.4s로 줄었으나 이는 병렬화와 무관한 API 측 변동이다(임베딩은 여전히 순차).
+- 권장 C: **4**. 429·오류 0건. 운영 값은 Spring·운영 협의 후 `.env`로 적용한다(코드 기본값 1 유지). 10건 상한 기준 push당 처리 시간 약 35s.
+- 주의: C>1이면 `per_commit` 지표는 LLM 호출 완료 순서로 커밋과 대응되므로 커밋별 값은 근사치다(집계는 유효).
 
 ### 비용 상한 설계
 

@@ -48,11 +48,11 @@ runbook, 결제 API)의 사실로 답할 수 있으며, 문서별로 고르게 �
 
 ```bash
 # 수집 (실 임베딩 API 호출) — RUN_LIVE_LLM=1과 비어있지 않은 GMS_API_KEY 필요
-RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect
-RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --limit 5   # 스모크용
+RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/cache_eval.py --collect
+RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/cache_eval.py --collect --limit 5   # 스모크용
 
 # 스윕 (API 호출 없음) — 임계치 0.85~0.99, 0.01 간격
-python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-{YYYYMMDD-HHMMSS}.jsonl
+PYTHONPATH=. python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-{YYYYMMDD-HHMMSS}.jsonl
 ```
 
 `--task-type`(`--collect` 전용)으로 임베딩 요청에 Gemini `taskType`을 붙여 수집할 수 있습니다
@@ -60,7 +60,7 @@ python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-{YYYYMMDD-HHMMSS
 `임베딩 모델: ... (taskType: ...)`로 표시됩니다. 구버전 캐시(필드 없음)도 그대로 읽힙니다.
 
 ```bash
-RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --task-type SEMANTIC_SIMILARITY \
+RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/cache_eval.py --collect --task-type SEMANTIC_SIMILARITY \
   --dataset scripts/eval/datasets/cache_pairs_holdout.jsonl
 ```
 
@@ -226,10 +226,10 @@ hit와 오적중을 가르기 어렵다는 결론이 났다. 2회차는 후보 �
 
 ```bash
 # 수집 (실 임베딩 + 실 LLM 40회 호출, 비용 발생)
-RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify
+RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/cache_eval.py --collect --verify
 
 # 오프라인 리포트 (API 호출 없음)
-python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.jsonl --direct-threshold 0.95
+PYTHONPATH=. python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.jsonl --direct-threshold 0.95
 ```
 
 direct 임계치 스윕과 "항상 검증" 모드(검증 없는 즉시 hit 지름길 제거)는 같은 캐시로 오프라인 계산한다
@@ -237,8 +237,8 @@ direct 임계치 스윕과 "항상 검증" 모드(검증 없는 즉시 hit 지�
 
 ```bash
 # direct 0.95~0.98 + 항상 검증을 candidate 0.80/0.85로 비교 (L2: false_hit<=2% AND hit>=40%)
-python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.jsonl --direct-sweep
-python3 scripts/eval/cache_eval.py --from-cache <file> --direct-sweep --direct-thresholds 0.95,0.97
+PYTHONPATH=. python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.jsonl --direct-sweep
+PYTHONPATH=. python3 scripts/eval/cache_eval.py --from-cache <file> --direct-sweep --direct-thresholds 0.95,0.97
 ```
 
 ### 결과 (2026-10-02, `data/eval/cache-20261002-004305.jsonl`)
@@ -317,13 +317,13 @@ python3 scripts/eval/cache_eval.py --from-cache <file> --direct-sweep --direct-t
 
 ```bash
 # 수집 (실 임베딩 + 실 LLM 호출, 비용 발생) — 튜닝용 40쌍 / 홀드아웃 30쌍 각각 v1,v2 비교
-RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify --verify-prompt-version v1,v2
-RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify --verify-prompt-version v1,v2 \
+RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/cache_eval.py --collect --verify --verify-prompt-version v1,v2
+RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/cache_eval.py --collect --verify --verify-prompt-version v1,v2 \
     --dataset scripts/eval/datasets/cache_pairs_holdout.jsonl
 
 # 오프라인 리포트 (API 호출 없음)
-python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<tuning-timestamp>.jsonl --direct-threshold 0.95
-python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<holdout-timestamp>.jsonl --direct-threshold 0.95
+PYTHONPATH=. python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<tuning-timestamp>.jsonl --direct-threshold 0.95
+PYTHONPATH=. python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<holdout-timestamp>.jsonl --direct-threshold 0.95
 ```
 
 ### 채택 기준
@@ -399,9 +399,9 @@ python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<holdout-timesta
 - L2 기준: false_hit_rate <= 2% AND hit_rate >= 40% (`meets_l2`)
 
 ```bash
-RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --verify --verify-prompt-version v2 \
+RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/cache_eval.py --collect --verify --verify-prompt-version v2 \
     --dataset scripts/eval/datasets/cache_pairs_holdout.jsonl
-python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.jsonl --direct-sweep
+PYTHONPATH=. python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.jsonl --direct-sweep
 ```
 
 - 원본 파일: `data/eval/cache-20261027-154000.jsonl`, 검증 모델/프롬프트: `claude-haiku-4-5-20251001` / v2, 임베딩: `gemini-embedding-2` (taskType 미지정)
@@ -426,9 +426,9 @@ python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.json
 - 방법: 같은 홀드아웃을 `--task-type SEMANTIC_SIMILARITY`로 재수집해 미지정(현행) 캐시와 same_intent 유사도 분포를 비교한다(임베딩 140건 규모, 임베딩 비용만 발생).
 
 ```bash
-RUN_LIVE_LLM=1 python3 scripts/eval/cache_eval.py --collect --task-type SEMANTIC_SIMILARITY \
+RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/cache_eval.py --collect --task-type SEMANTIC_SIMILARITY \
     --dataset scripts/eval/datasets/cache_pairs_holdout.jsonl
-python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.jsonl
+PYTHONPATH=. python3 scripts/eval/cache_eval.py --from-cache data/eval/cache-<timestamp>.jsonl
 ```
 
 | 항목 | taskType 미지정 (현행) | SEMANTIC_SIMILARITY |
