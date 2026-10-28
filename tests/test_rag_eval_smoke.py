@@ -1,7 +1,7 @@
 """
 scripts/eval/rag_eval.py --live 경로 오프라인 스모크 테스트 (X2).
 
-유료 L1 실행(실 임베딩: 문서 10건 + 질의 30건) 전에 배관(plumbing)이 깨지지 않았는지만 확인합니다.
+유료 실행(실 임베딩: 문서 40건 + 질의 80건) 전에 배관(plumbing)이 깨지지 않았는지만 확인합니다.
 임베딩은 결정적 가짜(문자 bigram 해시 벡터)로 대체하며 네트워크/LLM 호출이 없습니다.
 검색 품질(recall 등)은 가짜 임베딩이라 의미가 없으므로 단언하지 않고, 구조/매핑/접근 제어만 검증합니다.
 """
@@ -20,7 +20,17 @@ from scripts.eval.rag_docset import doc_allowed, load_cases, load_manifest
 
 _DIM = 256
 _TOP_K = 5
-_REQUIRED_KEYS = {"id", "category", "expected_doc_keys", "forbidden_doc_keys", "retrieved", "top_similarity"}
+_REQUIRED_KEYS = {
+    "id",
+    "category",
+    "expected_doc_keys",
+    "forbidden_doc_keys",
+    "expected_substrings",
+    "retrieved",
+    "top_similarity",
+    "margin",
+}
+_N_CASES = 80
 
 
 def _fake_vector(text: str) -> list[float]:
@@ -76,7 +86,7 @@ def records(monkeypatch):
 
 def test_collect_records_structure(records):
     cases = load_cases()
-    assert len(records) == len(cases) == 30
+    assert len(records) == len(cases) == _N_CASES
     assert [r["id"] for r in records] == [c.id for c in cases]
     for record in records:
         assert _REQUIRED_KEYS <= record.keys()
@@ -85,6 +95,11 @@ def test_collect_records_structure(records):
         assert [r["rank"] for r in retrieved] == list(range(1, len(retrieved) + 1))
         assert all(not r["doc_key"].startswith("unknown:") for r in retrieved)
         assert isinstance(record["top_similarity"], float)
+        assert all(isinstance(r["substring_hit"], bool) for r in retrieved)
+        if len(retrieved) >= 2:
+            assert record["margin"] == pytest.approx(retrieved[0]["similarity"] - retrieved[1]["similarity"])
+        else:
+            assert record["margin"] is None
     # 가짜 임베딩이라도 검색 자체는 동작해야 함(전부 빈 결과면 배관 문제)
     assert any(r["retrieved"] for r in records)
 
@@ -101,7 +116,23 @@ def test_collect_records_acl(records):
             assert item["doc_key"] not in record["forbidden_doc_keys"], record["id"]
             assert doc_allowed(manifest[item["doc_key"]], case.access), record["id"]
         checked += 1
-    assert checked == 8
+    assert checked == 16
+
+
+def test_substring_hit_matches_chunk_content(records):
+    # 정답 문구가 없는 케이스는 어떤 청크도 substring_hit가 아니어야 하고, 문구가 있는 케이스는 필드가 그대로 기록돼야 함
+    cases = {c.id: c for c in load_cases()}
+    scored = 0
+    for record in records:
+        subs = cases[record["id"]].expected_substrings
+        assert record["expected_substrings"] == subs
+        if not subs:
+            assert not any(r["substring_hit"] for r in record["retrieved"]), record["id"]
+        else:
+            scored += 1
+    assert scored == 8
+    # 문구가 있는 케이스 중 일부는 가짜 임베딩으로도 정답 청크가 검색되어 적중해야 함(배관 확인)
+    assert any(r["substring_hit"] for rec in records if rec["expected_substrings"] for r in rec["retrieved"])
 
 
 def test_env_restored_after_collect(records, tmp_path):
@@ -123,7 +154,10 @@ def test_cache_roundtrip_and_report(records, tmp_path):
     metrics = rag_eval.compute_metrics(loaded, k=_TOP_K)
     assert {"k", "overall", "categories"} <= metrics.keys()
     assert {"n", "n_scored", "recall_at_k", "mrr", "hit_at_1", "leak_count"} <= metrics["overall"].keys()
-    assert metrics["overall"]["n"] == 30
+    assert metrics["overall"]["n"] == _N_CASES
+    assert {"n_chunk_scored", "chunk_hit_at_k", "margin_mean", "margin_min"} <= metrics["overall"].keys()
+    assert metrics["overall"]["n_chunk_scored"] == 8
+    assert metrics["overall"]["margin_min"] is not None
     # leak은 ACL 카테고리만 집계(distractor의 forbidden 노출은 forbidden_exposed_count로 분리)
     assert metrics["overall"]["leak_count"] == 0
     assert "top_similarity_mean" in metrics["categories"]["out_of_corpus"]
@@ -132,6 +166,7 @@ def test_cache_roundtrip_and_report(records, tmp_path):
     assert f"recall@{_TOP_K}" in report
     assert "| overall |" in report
     assert "out_of_corpus top similarity" in report
+    assert f"청크 hit@{_TOP_K}" in report and "마진 평균/최소" in report
 
 
 def test_main_live_end_to_end(monkeypatch, tmp_path, capsys):
@@ -142,10 +177,27 @@ def test_main_live_end_to_end(monkeypatch, tmp_path, capsys):
     assert rag_eval.main(["--live", "--out", str(out)]) == 0
 
     lines = [line for line in out.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert len(lines) == 30
+    assert len(lines) == _N_CASES
     stdout = capsys.readouterr().out
-    assert "수집 완료: 30건" in stdout
+    assert f"수집 완료: {_N_CASES}건" in stdout
     assert "| 카테고리 |" in stdout
+
+
+def test_main_live_custom_manifest_and_cases(monkeypatch, tmp_path, capsys):
+    from scripts.eval.rag_docset import DEFAULT_MANIFEST
+
+    _patch_embed(monkeypatch, _fake_embed_texts)
+    monkeypatch.setattr(rag_eval, "_live_enabled", lambda: True)
+    cases_path = tmp_path / "cases.jsonl"
+    default_lines = [line for line in rag_eval.DEFAULT_CASES.read_text(encoding="utf-8").splitlines() if line.strip()]
+    cases_path.write_text("\n".join(default_lines[:3]) + "\n", encoding="utf-8")
+    out = tmp_path / "rag.jsonl"
+
+    argv = ["--live", "--manifest", str(DEFAULT_MANIFEST), "--cases", str(cases_path), "--out", str(out)]
+    assert rag_eval.main(argv) == 0
+
+    assert len(rag_eval.load_cache(out)) == 3
+    assert "수집 완료: 3건" in capsys.readouterr().out
 
 
 def test_main_live_gate_closed(monkeypatch, tmp_path, capsys):

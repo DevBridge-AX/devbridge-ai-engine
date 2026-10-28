@@ -1,7 +1,7 @@
 """
 RAG 품질 검증 문서 셋(X2) 로더/시딩 모듈.
 
-- 문서 셋: scripts/eval/datasets/rag_docset/ (manifest.json + 10개 가상 마크다운 문서)
+- 문서 셋: scripts/eval/datasets/rag_docset/ (manifest.json + 40개 가상 마크다운 문서)
 - 질의 케이스: scripts/eval/datasets/rag_cases.jsonl
 - load_manifest / load_cases / doc_allowed / access_filter_for 는 순수 함수(API 호출 없음)이며
   tests/test_rag_docset.py가 오프라인으로 검증합니다.
@@ -10,7 +10,7 @@ RAG 품질 검증 문서 셋(X2) 로더/시딩 모듈.
 
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -65,6 +65,8 @@ class RagCase:
     forbidden_doc_keys: list[str]
     access: CaseAccess
     note: str
+    # 정답 청크에만 있는 문구(선택). 검색된 청크 content에 하나라도 포함되면 청크 적중으로 봅니다.
+    expected_substrings: list[str] = field(default_factory=list)
 
 
 def load_manifest(path: Path = DEFAULT_MANIFEST) -> list[DocEntry]:
@@ -112,6 +114,7 @@ def load_cases(path: Path = DEFAULT_CASES) -> list[RagCase]:
                     can_view_restricted=bool(access["can_view_restricted"]),
                 ),
                 note=item.get("note", ""),
+                expected_substrings=list(item.get("expected_substrings", [])),
             )
         except KeyError as exc:
             raise ValueError(f"{path}:{lineno}: 필수 필드 {exc}가 없습니다.") from exc
@@ -148,8 +151,10 @@ def access_filter_for(case: RagCase) -> AccessFilter:
     )
 
 
-async def seed_docset_async(tmp_dir: Path) -> tuple[Session, str, dict[str, str]]:
-    """tmp_dir 아래 sqlite DB를 만들고 manifest의 문서를 task/민감도 메타와 함께 인덱싱합니다.
+async def seed_docset_async(
+    tmp_dir: Path, manifest_path: Path = DEFAULT_MANIFEST
+) -> tuple[Session, str, dict[str, str]]:
+    """tmp_dir 아래 sqlite DB를 만들고 manifest(기본: DEFAULT_MANIFEST)의 문서를 task/민감도 메타와 함께 인덱싱합니다.
 
     scripts/eval/seed.py::seed_workspace_async 와 같은 방식이며, 문서마다 task_id /
     sensitivity_level을 document_ingestion._run에 전달합니다.
@@ -169,7 +174,7 @@ async def seed_docset_async(tmp_dir: Path) -> tuple[Session, str, dict[str, str]
     db = sessionmaker(autocommit=False, autoflush=False, bind=engine)()
 
     doc_ids: dict[str, str] = {}
-    for entry in load_manifest():
+    for entry in load_manifest(manifest_path):
         doc_id = str(uuid.uuid4())
         db.add(
             KnowledgeDocument(
