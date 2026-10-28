@@ -7,7 +7,10 @@ API/DB/파일 I/O 없이 레코드만 다룹니다. `scripts/eval/rag_eval.py --
 
 레코드 형태:
 {id, category, expected_doc_keys, forbidden_doc_keys,
- retrieved: [{doc_key, similarity, rank}], top_similarity}
+ retrieved: [{doc_key, similarity, rank, substring_hit}], top_similarity,
+ expected_substrings, margin}
+- expected_substrings / substring_hit / margin 은 2회차(E3a)에서 추가된 선택 필드이며, 없는 레코드
+  (1회차 jsonl)는 청크 적중·마진 집계에서 제외됩니다.
 - rank는 1부터 시작하며, 같은 doc_key의 여러 청크가 있으면 가장 높은 순위만 의미를 가집니다.
 - expected_doc_keys가 비어 있는 케이스(acl 거절, out_of_corpus)는 recall/MRR/hit@1 집계에서 제외됩니다.
 """
@@ -56,6 +59,36 @@ def mrr(record: dict) -> float | None:
     return 0.0
 
 
+def chunk_hit_at_k(record: dict, k: int) -> float | None:
+    """상위 k개 청크 중 정답 문구를 포함한 청크가 하나라도 있으면 1.0, 없으면 0.0.
+
+    expected_substrings가 비어 있거나 없는 레코드는 채점 대상이 아니므로 None.
+    """
+    if not record.get("expected_substrings"):
+        return None
+    top = [item for item in record.get("retrieved", []) if item["rank"] <= k]
+    return 1.0 if any(item.get("substring_hit") for item in top) else 0.0
+
+
+def margin(record: dict) -> float | None:
+    """1위와 2위 청크의 유사도 차이. 결과가 2건 미만이면 None."""
+    ordered = sorted(record.get("retrieved", []), key=lambda r: r["rank"])
+    if len(ordered) < 2:
+        return None
+    return ordered[0]["similarity"] - ordered[1]["similarity"]
+
+
+def _forbidden_second(record: dict) -> bool:
+    """1위 청크가 정답 문서이고 2위 청크가 forbidden 문서이면 True."""
+    ordered = sorted(record.get("retrieved", []), key=lambda r: r["rank"])
+    if len(ordered) < 2:
+        return False
+    return (
+        ordered[0]["doc_key"] in record["expected_doc_keys"]
+        and ordered[1]["doc_key"] in record.get("forbidden_doc_keys", [])
+    )
+
+
 def forbidden_exposed(record: dict) -> bool:
     """forbidden 문서가 검색 결과에 하나라도 나타나면 True(카테고리 무관)."""
     forbidden = set(record.get("forbidden_doc_keys", []))
@@ -71,16 +104,26 @@ def _mean(values: list[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
 
+def _min(values: list[float]) -> float | None:
+    return min(values) if values else None
+
+
 def _aggregate(records: list[dict], k: int) -> dict:
     recalls = [v for r in records if (v := recall_at_k(r, k)) is not None]
     mrrs = [v for r in records if (v := mrr(r)) is not None]
     hits = [v for r in records if (v := hit_at_1(r)) is not None]
+    chunk_hits = [v for r in records if (v := chunk_hit_at_k(r, k)) is not None]
+    margins = [v for r in records if (v := margin(r)) is not None]
     return {
         "n": len(records),
         "n_scored": len(recalls),
         "recall_at_k": _mean(recalls),
         "mrr": _mean(mrrs),
         "hit_at_1": _mean([1.0 if h else 0.0 for h in hits]),
+        "n_chunk_scored": len(chunk_hits),
+        "chunk_hit_at_k": _mean(chunk_hits),
+        "margin_mean": _mean(margins),
+        "margin_min": _min(margins),
         "leak_count": sum(1 for r in records if acl_leak(r)),
         "forbidden_exposed_count": sum(1 for r in records if forbidden_exposed(r)),
     }
@@ -89,7 +132,10 @@ def _aggregate(records: list[dict], k: int) -> dict:
 def compute_metrics(records: list[dict], k: int = 5) -> dict:
     """전체/카테고리별 recall@k, MRR, hit@1, ACL leak 건수, forbidden 노출 건수를 계산합니다.
 
-    out_of_corpus 카테고리에는 top_similarity의 mean/max를 추가합니다.
+    out_of_corpus 카테고리에는 top_similarity의 mean/max를, distractor 카테고리에는 정답이 1위인
+    케이스의 마진 평균(distractor_margin_mean)과 정답 1위·forbidden 2위 케이스의 마진
+    (forbidden_second_count / forbidden_second_margin_mean)을 추가합니다.
+    청크 적중(chunk_hit_at_k)은 expected_substrings가 있는 레코드만, 마진은 결과 2건 이상인 레코드만 채점합니다.
     """
     by_category: dict[str, list[dict]] = {}
     for record in records:
@@ -102,6 +148,13 @@ def compute_metrics(records: list[dict], k: int = 5) -> dict:
             sims = [r.get("top_similarity", 0.0) for r in items]
             agg["top_similarity_mean"] = _mean(sims)
             agg["top_similarity_max"] = max(sims) if sims else None
+        if name == "distractor":
+            top1 = [v for r in items if hit_at_1(r) and (v := margin(r)) is not None]
+            second = [margin(r) for r in items if _forbidden_second(r) and margin(r) is not None]
+            agg["distractor_margin_mean"] = _mean(top1)
+            agg["distractor_margin_min"] = _min(top1)
+            agg["forbidden_second_count"] = len(second)
+            agg["forbidden_second_margin_mean"] = _mean(second)
         categories[name] = agg
 
     return {"k": k, "overall": _aggregate(records, k), "categories": categories}
@@ -113,24 +166,48 @@ def _fmt(value: float | None, pct: bool = True) -> str:
     return f"{value * 100:.1f}%" if pct else f"{value:.3f}"
 
 
+def _fmt_chunk_hit(agg: dict) -> str:
+    """청크 hit@k를 '비율 (채점 n)'으로 표기합니다. 채점 대상이 없으면 '-'."""
+    if agg["chunk_hit_at_k"] is None:
+        return "-"
+    return f"{_fmt(agg['chunk_hit_at_k'])} ({agg['n_chunk_scored']})"
+
+
+def _fmt_margin(agg: dict) -> str:
+    if agg["margin_mean"] is None:
+        return "-"
+    return f"{agg['margin_mean']:.3f}/{agg['margin_min']:.3f}"
+
+
 def render_markdown(metrics: dict) -> str:
     """compute_metrics 결과를 markdown 표로 렌더링합니다."""
     k = metrics["k"]
     lines = [
-        f"| 카테고리 | n | 채점 n | recall@{k} | MRR | hit@1 | ACL leak | forbidden 노출 |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        f"| 카테고리 | n | 채점 n | recall@{k} | MRR | hit@1 | ACL leak | forbidden 노출 "
+        f"| 청크 hit@{k} | 마진 평균/최소 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
 
     def row(name: str, agg: dict) -> str:
         return (
             f"| {name} | {agg['n']} | {agg['n_scored']} | {_fmt(agg['recall_at_k'])} "
             f"| {_fmt(agg['mrr'], pct=False)} | {_fmt(agg['hit_at_1'])} | {agg['leak_count']} "
-            f"| {agg['forbidden_exposed_count']} |"
+            f"| {agg['forbidden_exposed_count']} | {_fmt_chunk_hit(agg)} | {_fmt_margin(agg)} |"
         )
 
     lines.append(row("overall", metrics["overall"]))
     for name, agg in sorted(metrics["categories"].items()):
         lines.append(row(name, agg))
+
+    dis = metrics["categories"].get("distractor")
+    if dis:
+        lines += [
+            "",
+            f"distractor margin(정답 1위): mean={_fmt(dis['distractor_margin_mean'], pct=False)}, "
+            f"min={_fmt(dis['distractor_margin_min'], pct=False)}; "
+            f"forbidden 2위 {dis['forbidden_second_count']}건 "
+            f"mean={_fmt(dis['forbidden_second_margin_mean'], pct=False)}",
+        ]
 
     ooc = metrics["categories"].get(OUT_OF_CORPUS)
     if ooc:

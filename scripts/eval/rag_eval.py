@@ -1,13 +1,15 @@
 """
 RAG 검색 품질 + 접근 제어 평가 CLI (X2).
 
-- --live: 가상 문서 10건을 tmp 워크스페이스에 실 임베딩으로 시딩하고, 케이스마다
+- --live: manifest의 가상 문서(기본 40건)를 tmp 워크스페이스에 실 임베딩으로 시딩하고, 케이스마다
   retriever.retrieve(access=...)를 호출해 결과를 data/eval/rag-{YYYYmmdd-HHMMSS}.jsonl로 저장합니다.
-  임베딩 API만 호출합니다(문서 10건 + 질의 30건, LLM 호출 없음). RUN_LIVE_LLM=1 필요.
+  임베딩 API만 호출합니다(문서 청크 + 질의 80건, LLM 호출 없음). RUN_LIVE_LLM=1 필요.
+  --manifest / --cases 로 다른 문서 셋·케이스 파일을 지정할 수 있습니다.
 - --from-cache <path>: 저장된 jsonl로 지표를 집계해 markdown 표를 출력합니다(API 호출 없음).
 
 사용법:
     RUN_LIVE_LLM=1 PYTHONPATH=. python3 scripts/eval/rag_eval.py --live [--limit N] [--top-k 5]
+        [--manifest PATH] [--cases PATH]
     PYTHONPATH=. python3 scripts/eval/rag_eval.py --from-cache data/eval/rag-....jsonl
 
 자세한 내용은 docs/rag-eval.md 를 참고하세요.
@@ -21,7 +23,13 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from scripts.eval.rag_docset import DEFAULT_CASES, access_filter_for, load_cases, seed_docset_async
+from scripts.eval.rag_docset import (
+    DEFAULT_CASES,
+    DEFAULT_MANIFEST,
+    access_filter_for,
+    load_cases,
+    seed_docset_async,
+)
 from scripts.eval.rag_eval_metrics import compute_metrics, render_markdown
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -60,7 +68,12 @@ def _live_enabled() -> bool:
     return bool(get_settings().gms_api_key)
 
 
-async def _collect_records(limit: int | None, top_k: int) -> list[dict]:
+async def _collect_records(
+    limit: int | None,
+    top_k: int,
+    manifest_path: Path = DEFAULT_MANIFEST,
+    cases_path: Path = DEFAULT_CASES,
+) -> list[dict]:
     """tmp 워크스페이스를 시드하고 케이스마다 retrieve를 호출합니다. 게이트는 main의 책임입니다."""
     import os
 
@@ -68,7 +81,7 @@ async def _collect_records(limit: int | None, top_k: int) -> list[dict]:
     from app.core.rag import retriever
     from app.db.vector_store import get_vector_store
 
-    cases = load_cases(DEFAULT_CASES)
+    cases = load_cases(cases_path)
     if limit is not None:
         cases = cases[:limit]
 
@@ -84,7 +97,7 @@ async def _collect_records(limit: int | None, top_k: int) -> list[dict]:
         get_settings.cache_clear()
         get_vector_store.cache_clear()
 
-        db, workspace_id, doc_ids = await seed_docset_async(tmp_path)
+        db, workspace_id, doc_ids = await seed_docset_async(tmp_path, manifest_path)
         id_to_key = {str(v): k for k, v in doc_ids.items()}
         try:
             records = []
@@ -97,6 +110,8 @@ async def _collect_records(limit: int | None, top_k: int) -> list[dict]:
                         "doc_key": id_to_key.get(str(c.source_id), f"unknown:{c.source_id}"),
                         "similarity": c.similarity_score,
                         "rank": rank,
+                        # 청크 원문은 저장하지 않고 정답 문구 포함 여부(bool)만 기록합니다.
+                        "substring_hit": any(s in c.content for s in case.expected_substrings),
                     }
                     for rank, c in enumerate(chunks, start=1)
                 ]
@@ -106,7 +121,14 @@ async def _collect_records(limit: int | None, top_k: int) -> list[dict]:
                         "category": case.category,
                         "expected_doc_keys": case.expected_doc_keys,
                         "forbidden_doc_keys": case.forbidden_doc_keys,
+                        "expected_substrings": case.expected_substrings,
                         "retrieved": retrieved,
+                        # 1위와 2위 청크 유사도 차이(결과가 2건 미만이면 None)
+                        "margin": (
+                            retrieved[0]["similarity"] - retrieved[1]["similarity"]
+                            if len(retrieved) >= 2
+                            else None
+                        ),
                         "top_similarity": max((r["similarity"] for r in retrieved), default=0.0),
                     }
                 )
@@ -129,6 +151,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=None, help="--live 시 처리할 케이스 수 제한.")
     parser.add_argument("--top-k", type=int, default=5, help="검색 top_k 및 recall@k의 k (기본 5).")
     parser.add_argument(
+        "--manifest", type=Path, default=DEFAULT_MANIFEST, help="--live 시 사용할 문서 manifest.json 경로."
+    )
+    parser.add_argument("--cases", type=Path, default=DEFAULT_CASES, help="--live 시 사용할 케이스 jsonl 경로.")
+    parser.add_argument(
         "--out", type=Path, default=None, help="--live 결과 저장 경로 (기본: data/eval/rag-{ts}.jsonl)"
     )
     args = parser.parse_args(argv)
@@ -148,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-        records = asyncio.run(_collect_records(args.limit, args.top_k))
+        records = asyncio.run(_collect_records(args.limit, args.top_k, args.manifest, args.cases))
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         out_path = args.out or _DEFAULT_CACHE_DIR / f"rag-{stamp}.jsonl"
         save_cache(out_path, records)

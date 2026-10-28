@@ -8,24 +8,29 @@ import pytest
 
 from scripts.eval.rag_eval_metrics import (
     acl_leak,
+    chunk_hit_at_k,
     compute_metrics,
     forbidden_exposed,
     hit_at_1,
+    margin,
     mrr,
     recall_at_k,
     render_markdown,
 )
 
 
-def _rec(id, category, expected, retrieved_keys, forbidden=(), top=None):
+def _rec(id, category, expected, retrieved_keys, forbidden=(), top=None, subs=None, hits=(), sims=None):
+    sims = sims if sims is not None else [0.9 - 0.1 * i for i in range(len(retrieved_keys))]
     retrieved = [
-        {"doc_key": k, "similarity": 0.9 - 0.1 * i, "rank": i + 1} for i, k in enumerate(retrieved_keys)
+        {"doc_key": k, "similarity": sims[i], "rank": i + 1, "substring_hit": (i + 1) in hits}
+        for i, k in enumerate(retrieved_keys)
     ]
     return {
         "id": id,
         "category": category,
         "expected_doc_keys": expected,
         "forbidden_doc_keys": list(forbidden),
+        "expected_substrings": list(subs or []),
         "retrieved": retrieved,
         "top_similarity": top if top is not None else (retrieved[0]["similarity"] if retrieved else 0.0),
     }
@@ -109,6 +114,65 @@ def test_render_markdown():
     assert "| single_doc | 1 | 1 | 100.0% | 1.000 | 100.0% | 0 |" in md
     assert "| out_of_corpus |" in md
     assert "mean=0.400" in md
+
+
+def test_chunk_hit_at_k():
+    # expected_substrings가 없으면 채점 제외(None)
+    assert chunk_hit_at_k(_rec("a", "single_doc", ["d1"], ["d1"]), 5) is None
+    # 레거시 레코드(필드 자체가 없음)도 None
+    legacy = _rec("b", "single_doc", ["d1"], ["d1"])
+    del legacy["expected_substrings"]
+    assert chunk_hit_at_k(legacy, 5) is None
+    r = _rec("c", "single_doc", ["d1"], ["d1", "d1", "d2"], subs=["x"], hits=(3,))
+    assert chunk_hit_at_k(r, 2) == 0.0
+    assert chunk_hit_at_k(r, 3) == 1.0
+    miss = _rec("d", "single_doc", ["d1"], ["d1"], subs=["x"])
+    assert chunk_hit_at_k(miss, 5) == 0.0
+
+
+def test_margin():
+    assert margin(_rec("a", "single_doc", ["d1"], ["d1"])) is None
+    assert margin(_rec("b", "single_doc", ["d1"], [])) is None
+    r = _rec("c", "single_doc", ["d1"], ["d1", "d2", "d3"], sims=[0.80, 0.74, 0.5])
+    assert margin(r) == pytest.approx(0.06)
+
+
+def test_chunk_hit_and_margin_aggregation():
+    records = [
+        _rec("a", "single_doc", ["d1"], ["d1", "d2"], subs=["x"], hits=(1,), sims=[0.8, 0.7]),
+        _rec("b", "single_doc", ["d1"], ["d2", "d1"], subs=["x"], sims=[0.6, 0.55]),
+        _rec("c", "single_doc", ["d1"], ["d1"]),
+        _rec("d", "distractor", ["d1"], ["d1", "d2"], forbidden=["d2"], sims=[0.80, 0.76]),
+        _rec("e", "distractor", ["d1"], ["d2", "d1"], forbidden=["d2"], sims=[0.80, 0.78]),
+        _rec("f", "distractor", ["d1"], ["d1", "d3"], forbidden=["d2"], sims=[0.80, 0.70]),
+    ]
+    m = compute_metrics(records, k=5)
+    single = m["categories"]["single_doc"]
+    assert single["n_chunk_scored"] == 2
+    assert single["chunk_hit_at_k"] == pytest.approx(0.5)
+    assert single["margin_mean"] == pytest.approx((0.1 + 0.05) / 2)  # 'c'는 결과 1건이라 제외
+    assert single["margin_min"] == pytest.approx(0.05)
+    dis = m["categories"]["distractor"]
+    assert dis["chunk_hit_at_k"] is None
+    # 정답이 1위인 케이스: d(0.04), f(0.10)
+    assert dis["distractor_margin_mean"] == pytest.approx(0.07)
+    assert dis["distractor_margin_min"] == pytest.approx(0.04)
+    # 정답 1위 + forbidden 2위: d 한 건
+    assert dis["forbidden_second_count"] == 1
+    assert dis["forbidden_second_margin_mean"] == pytest.approx(0.04)
+    assert m["overall"]["margin_min"] == pytest.approx(0.02)
+
+
+def test_render_markdown_new_columns():
+    records = [
+        _rec("a", "single_doc", ["d1"], ["d1", "d2"], subs=["x"], hits=(1,), sims=[0.8, 0.7]),
+        _rec("d", "distractor", ["d1"], ["d1", "d2"], forbidden=["d2"], sims=[0.80, 0.76]),
+    ]
+    md = render_markdown(compute_metrics(records, k=5))
+    assert "청크 hit@5" in md and "마진 평균/최소" in md
+    assert "| single_doc | 1 | 1 | 100.0% | 1.000 | 100.0% | 0 | 0 | 100.0% (1) | 0.100/0.100 |" in md
+    assert "| distractor | 1 | 1 | 100.0% | 1.000 | 100.0% | 0 | 1 | - | 0.040/0.040 |" in md
+    assert "distractor margin(정답 1위): mean=0.040, min=0.040; forbidden 2위 1건 mean=0.040" in md
 
 
 def test_rag_eval_cli_requires_mode_and_from_cache(tmp_path, capsys):

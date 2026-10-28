@@ -98,5 +98,305 @@
     "sensitivity_level": "restricted",
     "topic": "급여 스키마",
     "note": "restricted 문서"
+  },
+  {
+    "doc_key": "deploy-dev",
+    "file": "deploy-dev.md",
+    "title": "개발 환경 배포 절차",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "배포 절차",
+    "note": "distractor 계열(dev)"
+  },
+  {
+    "doc_key": "deploy-staging",
+    "file": "deploy-staging.md",
+    "title": "스테이징 환경 배포 절차",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "배포 절차",
+    "note": "distractor 계열(staging)"
+  },
+  {
+    "doc_key": "deploy-prod",
+    "file": "deploy-prod.md",
+    "title": "운영 환경 배포 절차",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "배포 절차",
+    "note": "distractor 계열(prod)"
+  },
+  {
+    "doc_key": "log-retention-audit",
+    "file": "log-retention-audit.md",
+    "title": "감사 로그 보존 정책",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "로그 보존",
+    "note": "distractor 계열(audit)"
+  },
+  {
+    "doc_key": "log-retention-access",
+    "file": "log-retention-access.md",
+    "title": "엣지 접근 로그 보존 정책",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "로그 보존",
+    "note": "distractor 계열(edge access)"
+  },
+  {
+    "doc_key": "payment-retry-card",
+    "file": "payment-retry-card.md",
+    "title": "카드 결제 재시도 정책",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "결제 재시도",
+    "note": "distractor 계열(card)"
+  },
+  {
+    "doc_key": "payment-retry-bank",
+    "file": "payment-retry-bank.md",
+    "title": "계좌이체 결제 재시도 정책",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "결제 재시도",
+    "note": "distractor 계열(bank)"
+  },
+  {
+    "doc_key": "onboarding-backend",
+    "file": "onboarding-backend.md",
+    "title": "백엔드 개발자 온보딩 가이드",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "온보딩",
+    "note": "distractor 계열(backend)"
+  },
+  {
+    "doc_key": "onboarding-frontend",
+    "file": "onboarding-frontend.md",
+    "title": "프론트엔드 개발자 온보딩 가이드",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "온보딩",
+    "note": "distractor 계열(frontend)"
+  },
+  {
+    "doc_key": "onboarding-qa",
+    "file": "onboarding-qa.md",
+    "title": "QA 엔지니어 온보딩 가이드",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "온보딩",
+    "note": "distractor 계열(qa)"
+  },
+  {
+    "doc_key": "search-api",
+    "file": "search-api.md",
+    "title": "검색 API 가이드",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "API 가이드",
+    "note": "API 계열(search)"
+  },
+  {
+    "doc_key": "payment-api",
+    "file": "payment-api.md",
+    "title": "결제 API 가이드",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "API 가이드",
+    "note": "API 계열(payment)"
+  },
+  {
+    "doc_key": "file-upload-api",
+    "file": "file-upload-api.md",
+    "title": "파일 업로드 API 가이드",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "API 가이드",
+    "note": "API 계열(file upload)"
+  },
+  {
+    "doc_key": "runbook-db",
+    "file": "runbook-db.md",
+    "title": "DB 장애 대응 runbook",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "장애 runbook",
+    "note": "runbook 계열(db)"
+  },
+  {
+    "doc_key": "runbook-queue",
+    "file": "runbook-queue.md",
+    "title": "메시지 큐 장애 대응 runbook",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "장애 runbook",
+    "note": "runbook 계열(queue)"
+  },
+  {
+    "doc_key": "runbook-cache",
+    "file": "runbook-cache.md",
+    "title": "캐시 장애 대응 runbook",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "장애 runbook",
+    "note": "runbook 계열(cache)"
+  },
+  {
+    "doc_key": "password-policy",
+    "file": "password-policy.md",
+    "title": "비밀번호 정책",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "보안 정책",
+    "note": "보안 계열(password)"
+  },
+  {
+    "doc_key": "token-policy",
+    "file": "token-policy.md",
+    "title": "인증 토큰 정책",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "보안 정책",
+    "note": "보안 계열(token)"
+  },
+  {
+    "doc_key": "vpn-policy",
+    "file": "vpn-policy.md",
+    "title": "VPN 접속 정책",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "보안 정책",
+    "note": "보안 계열(vpn)"
+  },
+  {
+    "doc_key": "meeting-2026-09-w1",
+    "file": "meeting-2026-09-w1.md",
+    "title": "정산 과제 회의록 (2026년 9월 1주차)",
+    "document_type": "markdown",
+    "task_id": "task-billing",
+    "sensitivity_level": "normal",
+    "topic": "회의록/회고",
+    "note": "task-billing 한정"
+  },
+  {
+    "doc_key": "meeting-2026-09-w2",
+    "file": "meeting-2026-09-w2.md",
+    "title": "정산 과제 회의록 (2026년 9월 2주차)",
+    "document_type": "markdown",
+    "task_id": "task-billing",
+    "sensitivity_level": "normal",
+    "topic": "회의록/회고",
+    "note": "task-billing 한정"
+  },
+  {
+    "doc_key": "meeting-2026-10-w1",
+    "file": "meeting-2026-10-w1.md",
+    "title": "정산 과제 회의록 (2026년 10월 1주차)",
+    "document_type": "markdown",
+    "task_id": "task-billing",
+    "sensitivity_level": "normal",
+    "topic": "회의록/회고",
+    "note": "task-billing 한정"
+  },
+  {
+    "doc_key": "settlement-daily",
+    "file": "settlement-daily.md",
+    "title": "일 정산 절차",
+    "document_type": "markdown",
+    "task_id": "task-billing",
+    "sensitivity_level": "normal",
+    "topic": "정산 설계",
+    "note": "task-billing 한정"
+  },
+  {
+    "doc_key": "settlement-monthly",
+    "file": "settlement-monthly.md",
+    "title": "월 정산 절차",
+    "document_type": "markdown",
+    "task_id": "task-billing",
+    "sensitivity_level": "normal",
+    "topic": "정산 설계",
+    "note": "task-billing 한정"
+  },
+  {
+    "doc_key": "hr-benefits",
+    "file": "hr-benefits.md",
+    "title": "복지 제도 안내 (제한 문서)",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "restricted",
+    "topic": "인사 복지",
+    "note": "restricted 문서"
+  },
+  {
+    "doc_key": "hr-leave-policy",
+    "file": "hr-leave-policy.md",
+    "title": "휴가 제도 기준 (제한 문서)",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "restricted",
+    "topic": "인사 휴가",
+    "note": "restricted 문서"
+  },
+  {
+    "doc_key": "architecture-overview",
+    "file": "architecture-overview.md",
+    "title": "서비스 아키텍처 개요",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "아키텍처",
+    "note": "긴 문서(8,000자 이상 목표)"
+  },
+  {
+    "doc_key": "incident-postmortem-2026-08",
+    "file": "incident-postmortem-2026-08.md",
+    "title": "2026년 8월 장애 사후 분석",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "장애 사후 분석",
+    "note": "긴 문서(7,000자 이상 목표)"
+  },
+  {
+    "doc_key": "release-notes-2026",
+    "file": "release-notes-2026.md",
+    "title": "2026년 릴리스 노트",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "릴리스 노트",
+    "note": "긴 문서(6,500자 이상 목표)"
+  },
+  {
+    "doc_key": "api-style-guide",
+    "file": "api-style-guide.md",
+    "title": "API 스타일 가이드",
+    "document_type": "markdown",
+    "task_id": null,
+    "sensitivity_level": "normal",
+    "topic": "API 가이드",
+    "note": "긴 문서(6,000자 이상 목표)"
   }
 ]
