@@ -5,7 +5,7 @@ run()은 ChatRequest를 받아 ChatEvent(token/done)를 순서대로 yield합니
 LangGraph 전환 없이 단순 파이프라인 함수로 구현합니다.
 
 흐름:
-  truncate_history → query_rewriter → [semantic_cache 조회] → retriever → grounding
+  truncate_history → query_rewriter → [semantic_cache 조회] → retriever → [reranker] → grounding
     → [cache hit] 저장된 답변을 token* → done 으로 재생 (그라운딩·메인 LLM 생략)
     → [실패] done(is_groundable=False)
     → [통과] persona_prompt + call_main_stream → token* → [첫 턴이면 cache 저장] → done
@@ -16,6 +16,10 @@ hit 시에는 접근 제어를 재검증하고, 저장은 첫 턴 + 정상 그�
 때만 수행합니다. semantic_cache_verify_enabled를 켜면 임계치 아래 후보(최선 1건)를 경량 LLM으로
 재검증해 YES일 때만 hit로 인정합니다(접근 재검증 후에 호출, 실패/타임아웃은 miss, 검증 호출의
 토큰은 token_usage에 넣지 않고 llm_calls의 purpose="cache_verify"로만 기록). 응답 형식(token/done)은 변하지 않으며 hit의 token_usage.main은 0입니다.
+
+리랭커(rerank_enabled, 기본 off): 켜지면 retriever가 rerank_candidates건을 가져오고 경량 LLM이 순서만
+재정렬해 상위 5건을 넘깁니다(similarity_score 불변, 실패 시 원래 순서). 리랭크 토큰은 token_usage에
+넣지 않고 llm_calls(purpose="rerank")와 chat_metrics의 rerank_* 필드로만 기록합니다.
 
 관측성: 요청 1건당 구간별 소요 시간(rewrite_ms/retrieve_ms/grounding_ms/llm_ms/
 ttft_ms/total_ms)과 품질 신호(chunk_count/top_similarity/is_groundable/confidence 등)를
@@ -40,7 +44,7 @@ from app.core.llm import query_rewriter
 from app.core.llm.persona_prompts import get_system_prompt
 from app.core.llm.provider import LLMUsage
 from app.core.metrics import StageTimer, record_metric
-from app.core.rag import grounding, retriever
+from app.core.rag import grounding, reranker, retriever
 from app.core.rag.grounding import GroundingResult
 from app.core.rag.retriever import AccessFilter, RetrievedChunk
 from app.core.utils.token_counter import truncate_history
@@ -55,6 +59,9 @@ from app.schemas.chat import (
 logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "persona-v1"
+
+# 그라운딩·답변 컨텍스트에 쓰는 최종 청크 수 (리랭크 후보 수와 별개)
+_FINAL_TOP_K = 5
 
 # 히스토리 토큰 예산 (max_context_tokens 30000 기준)
 # 시스템 프롬프트 ~800 + RAG 컨텍스트 ~4000 + 현재 질문 ~200 + 응답 예약 ~3000 = ~8000
@@ -189,6 +196,7 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
                     cache_lookup_ms=cache_lookup_ms,
                     cache_verify_ms=cache_verify_ms,
                     cache_verify_result=cache_verify_result,
+                    rerank_stage="cache",
                 )
                 yield ChatEvent(
                     event="done",
@@ -204,16 +212,30 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
                 return
 
     retrieve_kwargs = {"query_embedding": query_embedding} if cache_enabled else {}
+    rerank_on = bool(getattr(settings, "rerank_enabled", False))
+    top_k_retrieve = settings.rerank_candidates if rerank_on else _FINAL_TOP_K
     with timer.measure("retrieve_ms"):
         chunks = await retriever.retrieve(
             rewritten_query,
             request.workspace_id,
             db,
-            top_k=5,
+            top_k=top_k_retrieve,
             access=access,
             timer=timer,
             **retrieve_kwargs,
         )
+
+    rerank_candidates = len(chunks)
+    with timer.measure("rerank_ms"):
+        rerank_result = await reranker.rerank(rewritten_query, chunks, top_k=_FINAL_TOP_K)
+    chunks = rerank_result.chunks
+    rerank_usage = rerank_result.usage
+    rerank_fields = {
+        "rerank_stage": rerank_result.stage,
+        "rerank_prompt_tokens": rerank_usage.prompt_tokens if rerank_usage else None,
+        "rerank_completion_tokens": rerank_usage.completion_tokens if rerank_usage else None,
+        "rerank_candidates": rerank_candidates,
+    }
 
     with timer.measure("grounding_ms"):
         grounding_result = await grounding.assess(chunks, request.content)
@@ -229,6 +251,7 @@ async def run(request: ChatRequest, db: Session) -> AsyncGenerator[ChatEvent, No
     top_similarity = max((c.similarity_score for c in chunks), default=0.0)
 
     cache_fields = {
+        **rerank_fields,
         "cache_enabled": cache_enabled,
         "cache_hit": False,
         "cache_similarity": None,
@@ -377,6 +400,10 @@ def _record_chat_metric(
     cache_lookup_ms: float | None = None,
     cache_verify_ms: float | None = None,
     cache_verify_result: str | None = None,
+    rerank_stage: str | None = None,
+    rerank_prompt_tokens: int | None = None,
+    rerank_completion_tokens: int | None = None,
+    rerank_candidates: int | None = None,
 ) -> None:
     """chat 응답 1건의 지표를 기록합니다.
 
@@ -397,6 +424,7 @@ def _record_chat_metric(
         "bm25_ms": timer.stages.get("bm25_ms"),
         "vector_ms": timer.stages.get("vector_ms"),
         "acl_filter_ms": timer.stages.get("acl_filter_ms"),
+        "rerank_ms": timer.stages.get("rerank_ms"),
         "grounding_ms": timer.stages.get("grounding_ms"),
         "llm_ms": timer.stages.get("llm_ms"),
         "ttft_ms": ttft_ms,
@@ -427,6 +455,10 @@ def _record_chat_metric(
         "cache_lookup_ms": cache_lookup_ms,
         "cache_verify_ms": cache_verify_ms,
         "cache_verify_result": cache_verify_result,
+        "rerank_stage": rerank_stage,
+        "rerank_prompt_tokens": rerank_prompt_tokens,
+        "rerank_completion_tokens": rerank_completion_tokens,
+        "rerank_candidates": rerank_candidates,
     }
     record_metric("chat_metrics", payload)
 
