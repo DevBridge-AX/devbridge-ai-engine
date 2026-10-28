@@ -64,6 +64,8 @@ def _record_llm_call(
     http_status: int | None,
     streamed: bool,
     ttft_ms: float | None = None,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
 ) -> None:
     """LLM 호출 1건의 관측성 이벤트를 `llm_calls.jsonl`에 기록합니다.
 
@@ -86,6 +88,8 @@ def _record_llm_call(
             "http_status": http_status,
             "streamed": streamed,
             "ttft_ms": ttft_ms,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_creation_tokens": cache_creation_tokens,
         },
     )
 
@@ -196,15 +200,20 @@ def _parse_response(provider: str, data: dict) -> tuple[str, dict]:
         (candidatesTokenCount + thoughtsTokenCount). anthropic/openai는 항상 0입니다.
         finish_reason은 gemini candidates[0].finishReason / anthropic stop_reason /
         openai choices[0].finish_reason입니다.
+        cache_read_tokens/cache_creation_tokens는 anthropic usage의 프롬프트 캐시 토큰
+        (cache_read_input_tokens/cache_creation_input_tokens, 없으면 0)이며 openai/gemini는 항상 0입니다.
     """
     if provider == "anthropic":
+        usage = data["usage"]
         return (
             data["content"][0]["text"],
             {
-                "input_tokens": data["usage"]["input_tokens"],
-                "output_tokens": data["usage"]["output_tokens"],
+                "input_tokens": usage["input_tokens"],
+                "output_tokens": usage["output_tokens"],
                 "thoughts_tokens": 0,
                 "finish_reason": data.get("stop_reason"),
+                "cache_read_tokens": usage.get("cache_read_input_tokens", 0) or 0,
+                "cache_creation_tokens": usage.get("cache_creation_input_tokens", 0) or 0,
             },
         )
     if provider == "openai":
@@ -215,6 +224,8 @@ def _parse_response(provider: str, data: dict) -> tuple[str, dict]:
                 "output_tokens": data["usage"]["completion_tokens"],
                 "thoughts_tokens": 0,
                 "finish_reason": data["choices"][0].get("finish_reason"),
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
             },
         )
     # gemini
@@ -235,6 +246,8 @@ def _parse_response(provider: str, data: dict) -> tuple[str, dict]:
         "output_tokens": candidates_tokens + thoughts_tokens,
         "thoughts_tokens": thoughts_tokens,
         "finish_reason": finish_reason,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
     }
 
 
@@ -262,6 +275,7 @@ async def call_main(
 
     start = time.perf_counter()
     prompt_tokens = completion_tokens = thoughts_tokens = 0
+    cache_read_tokens = cache_creation_tokens = 0
     finish_reason: str | None = None
     error_type: str | None = None
     http_status: int | None = None
@@ -277,6 +291,8 @@ async def call_main(
         completion_tokens = usage_raw["output_tokens"]
         thoughts_tokens = usage_raw["thoughts_tokens"]
         finish_reason = usage_raw["finish_reason"]
+        cache_read_tokens = usage_raw.get("cache_read_tokens", 0)
+        cache_creation_tokens = usage_raw.get("cache_creation_tokens", 0)
         return text, LLMUsage(
             model=settings.main_model,
             prompt_tokens=prompt_tokens,
@@ -305,6 +321,8 @@ async def call_main(
             error_type=error_type,
             http_status=http_status,
             streamed=False,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
         )
 
 
@@ -322,6 +340,7 @@ async def call_main_stream(
 
     input_tokens = 0
     output_tokens = 0
+    cache_read_tokens = cache_creation_tokens = 0
     finish_reason: str | None = None
     start = time.perf_counter()
     ttft_ms: float | None = None
@@ -345,7 +364,10 @@ async def call_main_stream(
 
                     event_type = data.get("type")
                     if event_type == "message_start":
-                        input_tokens = data["message"]["usage"].get("input_tokens", 0)
+                        msg_usage = data["message"]["usage"]
+                        input_tokens = msg_usage.get("input_tokens", 0)
+                        cache_read_tokens = msg_usage.get("cache_read_input_tokens", 0) or 0
+                        cache_creation_tokens = msg_usage.get("cache_creation_input_tokens", 0) or 0
                     elif event_type == "content_block_delta":
                         delta = data.get("delta", {})
                         if delta.get("type") == "text_delta":
@@ -385,6 +407,8 @@ async def call_main_stream(
             http_status=http_status,
             streamed=True,
             ttft_ms=ttft_ms,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
         )
 
 
@@ -405,6 +429,7 @@ async def call_rewrite(
 
     start = time.perf_counter()
     prompt_tokens = completion_tokens = thoughts_tokens = 0
+    cache_read_tokens = cache_creation_tokens = 0
     finish_reason: str | None = None
     error_type: str | None = None
     http_status: int | None = None
@@ -420,6 +445,8 @@ async def call_rewrite(
         completion_tokens = usage_raw["output_tokens"]
         thoughts_tokens = usage_raw["thoughts_tokens"]
         finish_reason = usage_raw["finish_reason"]
+        cache_read_tokens = usage_raw.get("cache_read_tokens", 0)
+        cache_creation_tokens = usage_raw.get("cache_creation_tokens", 0)
         return text, LLMUsage(
             model=settings.rewrite_model,
             prompt_tokens=prompt_tokens,
@@ -448,6 +475,8 @@ async def call_rewrite(
             error_type=error_type,
             http_status=http_status,
             streamed=False,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
         )
 
 
@@ -502,6 +531,7 @@ async def call_grounding(
 
     start = time.perf_counter()
     prompt_tokens = completion_tokens = thoughts_tokens = 0
+    cache_read_tokens = cache_creation_tokens = 0
     finish_reason: str | None = None
     error_type: str | None = None
     http_status: int | None = None
@@ -518,6 +548,8 @@ async def call_grounding(
         completion_tokens = usage_raw["output_tokens"]
         thoughts_tokens = usage_raw["thoughts_tokens"]
         finish_reason = usage_raw["finish_reason"]
+        cache_read_tokens = usage_raw.get("cache_read_tokens", 0)
+        cache_creation_tokens = usage_raw.get("cache_creation_tokens", 0)
         if (
             finish_reason == "MAX_TOKENS"
             or thoughts_tokens
@@ -570,6 +602,8 @@ async def call_grounding(
             error_type=error_type,
             http_status=http_status,
             streamed=False,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
         )
 
 
@@ -595,6 +629,7 @@ async def call_structured(
 
     start = time.perf_counter()
     prompt_tokens = completion_tokens = thoughts_tokens = 0
+    cache_read_tokens = cache_creation_tokens = 0
     finish_reason: str | None = None
     error_type: str | None = None
     http_status: int | None = None
@@ -611,6 +646,8 @@ async def call_structured(
         completion_tokens = usage_raw["output_tokens"]
         thoughts_tokens = usage_raw["thoughts_tokens"]
         finish_reason = usage_raw["finish_reason"]
+        cache_read_tokens = usage_raw.get("cache_read_tokens", 0)
+        cache_creation_tokens = usage_raw.get("cache_creation_tokens", 0)
 
         text = text.strip()
         if text.startswith("```"):
@@ -645,4 +682,6 @@ async def call_structured(
             error_type=error_type,
             http_status=http_status,
             streamed=False,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
         )

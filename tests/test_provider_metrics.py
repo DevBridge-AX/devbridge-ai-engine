@@ -300,3 +300,71 @@ class TestCancelledErrorRecording:
         assert len(records) == 1
         assert records[0]["purpose"] == "cache_verify"
         assert records[0]["error_type"] == "CancelledError"
+
+
+class TestCacheTokensRecording:
+    """프롬프트 캐시 토큰(E2)이 llm_calls에 기록되는지 검증합니다. 캐시 필드가 없으면 0입니다."""
+
+    async def test_anthropic_cache_fields_recorded(self, mock_transport, metrics_tmp_dir):
+        resp = _anthropic_response("안녕하세요")
+        resp["usage"]["cache_read_input_tokens"] = 1200
+        resp["usage"]["cache_creation_input_tokens"] = 300
+        mock_transport(lambda req: httpx.Response(200, json=resp))
+
+        await call_main([{"role": "user", "content": "질문"}], "system")
+
+        records = _read_records(metrics_tmp_dir, "llm_calls")
+        assert len(records) == 1
+        assert records[0]["cache_read_tokens"] == 1200
+        assert records[0]["cache_creation_tokens"] == 300
+
+    async def test_anthropic_cache_fields_absent_default_zero(self, mock_transport, metrics_tmp_dir):
+        mock_transport(lambda req: httpx.Response(200, json=_anthropic_response("안녕하세요")))
+
+        await call_main([{"role": "user", "content": "질문"}], "system")
+
+        records = _read_records(metrics_tmp_dir, "llm_calls")
+        assert records[0]["cache_read_tokens"] == 0
+        assert records[0]["cache_creation_tokens"] == 0
+
+    def test_gemini_and_openai_cache_tokens_zero(self):
+        _, gemini_usage = provider._parse_response("gemini", _gemini_response("텍스트"))
+        openai_data = {
+            "choices": [{"message": {"content": "텍스트"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+        _, openai_usage = provider._parse_response("openai", openai_data)
+
+        for usage in (gemini_usage, openai_usage):
+            assert usage["cache_read_tokens"] == 0
+            assert usage["cache_creation_tokens"] == 0
+
+    async def test_stream_message_start_cache_fields_recorded(self, mock_transport, metrics_tmp_dir):
+        events = [
+            {
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": 42,
+                        "cache_read_input_tokens": 900,
+                        "cache_creation_input_tokens": 100,
+                    }
+                },
+            },
+            {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "안녕"}},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 7}},
+        ]
+        sse_body = "".join(f"data: {json.dumps(e)}\n\n" for e in events)
+        mock_transport(
+            lambda req: httpx.Response(
+                200, content=sse_body.encode("utf-8"), headers={"content-type": "text/event-stream"}
+            )
+        )
+
+        async for _ in call_main_stream([{"role": "user", "content": "질문"}], "system"):
+            pass
+
+        records = _read_records(metrics_tmp_dir, "llm_calls")
+        assert len(records) == 1
+        assert records[0]["cache_read_tokens"] == 900
+        assert records[0]["cache_creation_tokens"] == 100
