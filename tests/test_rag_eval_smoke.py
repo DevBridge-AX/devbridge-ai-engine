@@ -96,6 +96,9 @@ def test_collect_records_structure(records):
         assert all(not r["doc_key"].startswith("unknown:") for r in retrieved)
         assert isinstance(record["top_similarity"], float)
         assert all(isinstance(r["substring_hit"], bool) for r in retrieved)
+        # 시딩 조건 플래그(기본 off)
+        assert record["chunk_context"] is False
+        assert record["chunk_context_bm25"] is False
         if len(retrieved) >= 2:
             assert record["margin"] == pytest.approx(retrieved[0]["similarity"] - retrieved[1]["similarity"])
         else:
@@ -208,3 +211,41 @@ def test_main_live_gate_closed(monkeypatch, tmp_path, capsys):
     assert rag_eval.main(["--live", "--out", str(out)]) == 1
     assert not out.exists()
     assert "RUN_LIVE_LLM=1" in capsys.readouterr().err
+
+
+def test_collect_records_rerank_structure(monkeypatch):
+    import asyncio
+
+    from app.core.llm.provider import LLMUsage
+    from app.core.rag import reranker
+
+    _patch_embed(monkeypatch, _fake_embed_texts)
+    monkeypatch.setenv("RERANK_ENABLED", "true")
+    calls = {"n": 0}
+
+    async def fake_call(model, messages, system, **kwargs):
+        calls["n"] += 1
+        # 후보 10건을 역순(10..1)으로 정렬하라는 응답 -> 상위 5건은 10,9,8,7,6
+        return json.dumps({"ranking": list(range(10, 0, -1))}), LLMUsage(model, 1, 1)
+
+    monkeypatch.setattr(reranker, "call_with_model", fake_call)
+    records = asyncio.run(rag_eval._collect_records(None, _TOP_K, rerank=True))
+
+    assert len(records) == _N_CASES
+    applied = 0
+    for record in records:
+        assert _REQUIRED_KEYS <= record.keys()
+        assert {"reranked", "rerank_stage", "rerank_latency_ms"} <= record.keys()
+        retrieved, reranked = record["retrieved"], record["reranked"]
+        assert len(retrieved) <= 10
+        assert [r["rank"] for r in retrieved] == list(range(1, len(retrieved) + 1))
+        assert len(reranked) <= _TOP_K
+        assert [r["rank"] for r in reranked] == list(range(1, len(reranked) + 1))
+        assert set(reranked[0]) == set(retrieved[0]) if reranked else True
+        if record["rerank_stage"] == "applied":
+            applied += 1
+            assert reranked[0]["doc_key"] == retrieved[-1]["doc_key"]
+        else:
+            assert record["rerank_stage"] == "skipped_few"
+            assert reranked == retrieved[:_TOP_K]
+    assert applied > 0 and calls["n"] == applied

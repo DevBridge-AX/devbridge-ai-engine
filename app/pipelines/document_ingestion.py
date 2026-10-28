@@ -1,7 +1,7 @@
 """
 업로드 문서 청킹/임베딩/인덱싱 파이프라인.
 
-흐름: 파일 로드 → chunker → embedder → document_chunks(MySQL) 저장
+흐름: 파일 로드 → chunker → (선택) 청크 문맥 생성 → embedder → document_chunks(MySQL) 저장
       + vector_store.add() → KNOWLEDGE_DOCUMENTS.analysis_status 갱신 → usage_logs 누적
 
 백그라운드 태스크로 동작합니다. 완료/실패 여부는 KNOWLEDGE_DOCUMENTS.analysis_status로 추적합니다.
@@ -55,6 +55,7 @@ from app.core.cache.semantic_cache import get_semantic_cache
 from app.core.embeddings.embedder import embed_texts
 from app.core.metrics import StageTimer, record_metric
 from app.core.rag.bm25_index import get_bm25_manager
+from app.core.rag.chunk_context import content_sha1, generate_chunk_contexts
 from app.core.rag.chunker import chunk_document
 from app.db.models import ChunkSourceType, DocumentChunk, KnowledgeDocument
 from app.db.session import SessionLocal, log_embedding_usage
@@ -200,11 +201,43 @@ async def _run(
         )
         return []
 
-    embedding_input_chars = sum(len(c.content) for c in chunks)
+    settings = get_settings()
+    context_enabled = settings.chunk_context_enabled
+    contexts: list[str | None] = [None] * len(chunks)
+    context_stats = {"llm_calls": 0, "failed": 0, "reused": 0, "retried": 0}
+
+    if context_enabled:
+        try:
+            with timer.measure("context_ms"):
+                # 재인덱싱 재사용 맵과 문서 제목은 기존 행 삭제(store 단계) 전에 읽는다.
+                reuse = _load_context_reuse_map(db, workspace_id, knowledge_document_id)
+                doc_title = _load_doc_title(db, knowledge_document_id)
+                ctx = await generate_chunk_contexts(doc_title, text, chunks, reuse=reuse)
+            contexts = ctx.contexts
+            context_stats = {
+                "llm_calls": ctx.llm_calls, "failed": ctx.failed, "reused": ctx.reused,
+                "retried": ctx.retried,
+            }
+        except Exception as exc:
+            _record_ingestion_metric(
+                timer, total_start, workspace_id, knowledge_document_id, doc_type,
+                file_bytes=file_bytes, char_count=char_count, chunk_count=len(chunks),
+                replacement_ratio=replacement_ratio, embedding_input_chars=None,
+                embedding_provider_tokens=None,
+                result="FAILED", failure_stage="context", error_type=type(exc).__name__,
+            )
+            raise
+
+    # 문맥은 임베딩 입력 앞에만 붙이고, 저장되는 content는 원문 그대로다.
+    embed_inputs = [
+        f"{ctx_text}\n\n{c.content}" if ctx_text else c.content
+        for c, ctx_text in zip(chunks, contexts)
+    ]
+    embedding_input_chars = sum(len(t) for t in embed_inputs)
 
     try:
         with timer.measure("embed_ms"):
-            result = await embed_texts([c.content for c in chunks])
+            result = await embed_texts(embed_inputs)
     except Exception as exc:
         _record_ingestion_metric(
             timer, total_start, workspace_id, knowledge_document_id, doc_type,
@@ -212,6 +245,7 @@ async def _run(
             replacement_ratio=replacement_ratio, embedding_input_chars=embedding_input_chars,
             embedding_provider_tokens=None,
             result="FAILED", failure_stage="embed", error_type=type(exc).__name__,
+            **_context_metric_fields(context_stats),
         )
         raise
 
@@ -240,14 +274,22 @@ async def _run(
                 )
 
             pending: list[tuple[DocumentChunk, list[float], str]] = []
-            for chunk, embedding in zip(chunks, result.embeddings):
+            for chunk, embedding, ctx_text in zip(chunks, result.embeddings, contexts):
                 vector_id = str(uuid.uuid4())
+                chunk_metadata = chunk.chunk_metadata
+                if context_enabled:
+                    chunk_metadata = {
+                        **chunk.chunk_metadata,
+                        "content_sha1": content_sha1(chunk.content),
+                        "context": ctx_text,
+                        "context_model": settings.chunk_context_model if ctx_text else None,
+                    }
                 doc_chunk = DocumentChunk(
                     workspace_id=workspace_id,
                     source_type=ChunkSourceType.DOCUMENT,
                     source_id=knowledge_document_id,
                     content=chunk.content,
-                    chunk_metadata=chunk.chunk_metadata,
+                    chunk_metadata=chunk_metadata,
                     embedding_model=result.embedding_model,
                     embedding_model_version=result.embedding_model_version,
                     vector_id=vector_id,
@@ -285,12 +327,13 @@ async def _run(
             replacement_ratio=replacement_ratio, embedding_input_chars=embedding_input_chars,
             embedding_provider_tokens=getattr(result, "provider_tokens", None),
             result="FAILED", failure_stage="store", error_type=type(exc).__name__,
+            **_context_metric_fields(context_stats),
         )
         raise
 
     embedding_provider_tokens = getattr(result, "provider_tokens", None)
 
-    parse_warn_ratio = get_settings().ingestion_parse_warn_ratio
+    parse_warn_ratio = settings.ingestion_parse_warn_ratio
     result = "PARSE_WARN" if replacement_ratio > parse_warn_ratio else "COMPLETED"
 
     _record_ingestion_metric(
@@ -299,8 +342,46 @@ async def _run(
         replacement_ratio=replacement_ratio, embedding_input_chars=embedding_input_chars,
         embedding_provider_tokens=embedding_provider_tokens,
         result=result, failure_stage=None, error_type=None,
+        **_context_metric_fields(context_stats),
     )
     return old_vector_ids
+
+
+def _load_context_reuse_map(db, workspace_id: str, knowledge_document_id: str) -> dict[str, str]:
+    """같은 문서의 기존 청크에서 {content_sha1: context} 맵을 만든다(재인덱싱 시 LLM 재호출 방지)."""
+    rows = db.execute(
+        select(DocumentChunk.chunk_metadata).where(
+            DocumentChunk.workspace_id == workspace_id,
+            DocumentChunk.source_type == ChunkSourceType.DOCUMENT,
+            DocumentChunk.source_id == knowledge_document_id,
+        )
+    ).all()
+    reuse: dict[str, str] = {}
+    for (meta,) in rows:
+        if isinstance(meta, dict) and meta.get("content_sha1") and meta.get("context"):
+            reuse[meta["content_sha1"]] = meta["context"]
+    return reuse
+
+
+def _load_doc_title(db, knowledge_document_id: str) -> str:
+    """KnowledgeDocument.title을 조회한다. 행이 없거나 조회 실패 시 빈 문자열."""
+    try:
+        title = db.execute(
+            select(KnowledgeDocument.title).where(KnowledgeDocument.id == knowledge_document_id)
+        ).scalar_one_or_none()
+    except Exception:
+        logger.warning("document_ingestion: doc title lookup failed", exc_info=True)
+        return ""
+    return title or ""
+
+
+def _context_metric_fields(stats: dict) -> dict:
+    return {
+        "context_llm_calls": stats["llm_calls"],
+        "context_failed": stats["failed"],
+        "context_reused": stats["reused"],
+        "context_retried": stats["retried"],
+    }
 
 
 def _delete_vectors(vector_store, vector_ids: list[str], workspace_id: str) -> None:
@@ -349,6 +430,10 @@ def _record_ingestion_metric(
     result: str,
     failure_stage: str | None,
     error_type: str | None,
+    context_llm_calls: int = 0,
+    context_failed: int = 0,
+    context_reused: int = 0,
+    context_retried: int = 0,
 ) -> None:
     """문서 인덱싱 1건의 지표를 기록합니다. 문서 원문은 포함하지 않습니다."""
     total_ms = (time.perf_counter() - total_start) * 1000
@@ -369,6 +454,12 @@ def _record_ingestion_metric(
         "chunk_ms": timer.stages.get("chunk_ms"),
         "embed_ms": timer.stages.get("embed_ms"),
         "store_ms": timer.stages.get("store_ms"),
+        # 청크 문맥 보강(기본 off): off면 호출/실패/재사용 0, context_ms None. LLM 토큰은 llm_calls에 기록된다.
+        "context_llm_calls": context_llm_calls,
+        "context_failed": context_failed,
+        "context_reused": context_reused,
+        "context_retried": context_retried,
+        "context_ms": timer.stages.get("context_ms"),
         "total_ms": total_ms,
         "result": result,
         "failure_stage": failure_stage,

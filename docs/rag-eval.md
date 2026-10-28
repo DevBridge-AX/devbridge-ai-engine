@@ -90,6 +90,8 @@ PYTHONPATH=. python3 scripts/eval/rag_eval.py --from-cache data/eval/rag-YYYYmmd
 
 - 비용: 임베딩만 발생한다. 시드 40문서(청크 단위 임베딩, 약 130청크) + 질의 80건(질의당 1회). LLM 호출은 없다.
 - `--manifest PATH --cases PATH`로 다른 문서 셋·케이스 파일을 지정할 수 있다.
+- `CHUNK_CONTEXT_ENABLED=true`(실행 환경변수)로 시딩하면 청크 문맥 보강 임베딩(`app/core/rag/chunk_context.py`)이 적용된다. 레코드에 `chunk_context`·`chunk_context_bm25` 플래그가 기록된다. 청크 수만큼 문맥 생성 모델 호출이 추가된다.
+- `--rerank`(`--live` 전용, `RERANK_ENABLED=true` 필요): 후보 `RERANK_CANDIDATES`건을 가져와 `app/core/rag/reranker.py`로 재정렬한 결과(`reranked`)를 원래 순서(`retrieved`)와 함께 저장한다. 케이스당 리랭크 모델 호출 1회가 추가된다. `--rerank-interval SEC`는 케이스 간 대기, `--rerank-retries N`은 429(요청 제한) 시 15·30·60초 백오프 재시도 횟수다(평가 전용, 앱 경로는 재시도 없이 fail-open). `--from-cache`는 `reranked`가 있으면 기준선·리랭크·차이 표를 함께 출력한다.
 - `--live`는 tmp 디렉터리에 sqlite DB와 벡터스토어를 만들어 운영 데이터와 격리하며,
   결과는 `data/eval/rag-{YYYYmmdd-HHMMSS}.jsonl`에 저장된다.
 - 오프라인 검증: `python -m pytest tests/test_rag_docset.py tests/test_rag_eval_metrics.py`
@@ -211,3 +213,143 @@ distractor 마진(정답 1위 14건): 평균 0.091 / 최소 0.042. forbidden이 
 
 - E3b 리랭커: 순위 문제 7건(r004, r011, r020, r035, r044, r058, r070)을 추적 대상으로 한다. 목표는 single_doc hit@1 83.3% → 90% 이상, acl_task hit@1 50% → 75% 이상.
 - E3c 청크 문맥 보강: r005·r013(order-schema) recall 회복 여부와 긴 문서 청크 hit 유지.
+
+### 3회차 (LLM 리랭커) - 실험 환경 기준
+
+E3b 리랭커(`app/core/rag/reranker.py`, 기본 off)의 효과 실측이다. 후보 10건(RRF)을 `gemini-2.5-flash-lite`가 listwise로 재정렬해 상위 5건을 고른다. 순서만 바뀌고 `similarity_score`는 유지된다.
+
+- 실행일: 2026-10-28
+- 원본 파일: `data/eval/rag-v3-rerank.jsonl`
+- 설정: `RERANK_ENABLED=true`, `RERANK_MODEL=gemini-2.5-flash-lite`, `RERANK_CANDIDATES=10`, `RERANK_TIMEOUT_SECONDS=2.0`, `RERANK_MAX_CHUNK_CHARS=600`, 임베딩·하이브리드 설정은 2회차와 동일
+- 명령: `RUN_LIVE_LLM=1 RERANK_ENABLED=true PYTHONPATH=. python3 scripts/eval/rag_eval.py --live --rerank --rerank-interval 4 --rerank-retries 3 --top-k 5`
+- 기준선: 같은 실행에서 가져온 후보 10건의 원래 순서 상위 5건. 2회차(top-k 5 검색)와 후보 수가 달라 수치가 조금 다르다(overall recall@5 95.9% → 97.5%, hit@1 동일 86.9%). 비교는 이 기준선과 한다.
+
+#### 전체 요약
+
+| 지표 | 목표(E3a 후속) | 기준선 (후보 10 상위 5) | 리랭크 | 달성 여부 |
+| --- | --- | --- | --- | --- |
+| single_doc hit@1 | >= 90% | 83.3% | 100.0% (30/30) | 달성 |
+| acl_task hit@1 | >= 75% | 50.0% | 100.0% (4/4) | 달성 |
+| distractor hit@1 | >= 기준선 | 93.3% | 100.0% (15/15) | 달성 |
+| overall recall@5 / MRR / hit@1 | >= 기준선 | 97.5% / 0.919 / 86.9% | 98.4% / 0.989 / 98.4% (채점 61건) | 달성 |
+| ACL leak | = 0 | 0 | 0 | 달성 |
+| 청크 hit@5 (8건) | 유지 | 100.0% | 100.0% | 달성 |
+| 리랭크 적용률 / fallback | fallback <= 5% | - | 78/80 적용, fallback 2건(2.5%, 모두 `parse`) | 달성 |
+| 리랭크 지연 (applied 78건) | p50 <= 1,000ms | - | p50 889ms / p95 1,161ms / 최대 1,276ms | 달성 |
+
+#### 카테고리별 (리랭크)
+
+| 카테고리 | n | 채점 n | recall@5 | MRR | hit@1 | ACL leak | forbidden 노출 | 청크 hit@5 | 마진 평균/최소 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| single_doc | 30 | 30 | 100.0% | 1.000 | 100.0% | - | 0 | 100.0% (6) | 0.089/-0.004 |
+| cross_doc | 10 | 10 | 90.0% | 0.933 | 90.0% | - | 0 | 100.0% (2) | 0.019/-0.061 |
+| distractor | 15 | 15 | 100.0% | 1.000 | 100.0% | - | 13 | - | 0.107/0.013 |
+| acl_task | 10 | 4 | 100.0% | 1.000 | 100.0% | 0 | 0 | - | 0.027/-0.016 |
+| acl_restricted | 6 | 2 | 100.0% | 1.000 | 100.0% | 0 | 0 | - | 0.042/-0.028 |
+| out_of_corpus | 9 | 0 | - | - | - | 0 | 0 | - | 0.003/-0.048 |
+| overall | 80 | 61 | 98.4% | 0.989 | 98.4% | 0 | 13 | 100.0% (8) | 0.063/-0.061 |
+
+차이(리랭크 - 기준선): overall recall@5 +0.8%p / MRR +0.070 / hit@1 +11.5%p. single_doc hit@1 +16.7%p, acl_task +50.0%p, distractor +6.7%p, cross_doc recall@5 -5.0%p·hit@1 -10.0%p, acl_restricted 변화 없음.
+
+마진(1·2위 벡터 유사도 차이)은 순서만 바뀌므로 분포가 달라질 뿐 품질 지표가 아니다. 리랭크 후 1위가 BM25 전용 청크(벡터 유사도 0)가 될 수 있어 음수가 커질 수 있다.
+
+#### 순위 추적 케이스 (2회차 후속 7건 + 검색 실패 2건)
+
+| id | 카테고리 | 기준선 정답 순위 | 리랭크 후 | 비고 |
+| --- | --- | --- | --- | --- |
+| r004 | single_doc | 3위 | 1위 | |
+| r011 | single_doc | 5위 밖(후보 7위) | 1위 | 후보 10건에 포함돼 리랭커가 끌어올림 |
+| r020 | acl_task | 2위 | 1위 | |
+| r035 | single_doc | 2위 | 1위 | |
+| r044 | single_doc | 2위 | 1위 | |
+| r058 | distractor | 2위 | 1위 | 마진 -0.013이던 환경 단서 약한 케이스 |
+| r070 | acl_task | 2위 | 1위 | |
+| r005 | single_doc | 4위 | 1위 | 2회차에서 검색 실패로 분류했으나 후보 10건 기준으로는 4위였음 |
+| r013 | cross_doc | notification-api 1위, order-schema 없음 | notification-api 3위, order-schema 없음 | order-schema는 후보 10건에도 없음(E3c 대상) |
+
+#### 나빠진 케이스
+
+- r053(cross_doc, `architecture-overview` + `incident-postmortem-2026-08`): 기준선은 4위에 `architecture-overview`가 있었으나 리랭커가 `incident-postmortem` 청크 5개만 골라 recall@5가 0.5로 떨어졌다. listwise 리랭크는 문서 다양성을 고려하지 않으므로 같은 문서의 청크가 상위를 독점할 수 있다.
+- r013(cross_doc): `notification-api`가 1위 → 3위. 2문서 질의에서 리랭커가 `architecture-overview`를 더 관련 있다고 봤다.
+- fallback 2건(r078, r079, out_of_corpus): 응답 JSON 파싱 실패(`fallback:parse`). 코퍼스에 없는 질의에서 모델이 schema 밖 응답을 냈다. 원래 순서를 그대로 사용했고 채점 대상이 아니다.
+
+#### 요청 제한 (중요)
+
+- GMS 경유 `gemini-2.5-flash-lite`는 연속 호출 약 20회 이후 `429 RESOURCE_EXHAUSTED`를 반환했고, 간격 4초(15 RPM)로도 다른 사용자의 트래픽과 겹치면 429가 났다(공유 키 쿼터로 추정). 간격 없이 돌린 1차 실행은 80건 중 52건이 `fallback:http_429`였다.
+- 최종 실측은 간격 4초 + 429 재시도 3회(15·30·60초 백오프)로 수행했고 재시도 3건이 모두 성공했다.
+- 운영 의미: 리랭커는 fail-open이므로 429 시 품질이 기준선으로 돌아갈 뿐 응답은 실패하지 않는다. 다만 그라운딩 판정도 같은 모델을 쓰므로 동시 요청이 많으면 둘 다 fallback될 수 있다. 켜기 전에 GMS의 flash-lite 분당 한도를 확인하고, `chat_metrics.rerank_stage`의 `fallback:http_429` 비율을 모니터링해야 한다.
+
+#### 결론
+
+- 순위 문제 7건이 전부 1위로 회복됐고 single_doc·acl_task·distractor hit@1이 100%가 됐다. 지연 p50 889ms, fallback 2.5%로 판정 기준을 모두 충족한다.
+- cross_doc은 r053 한 건 때문에 recall@5 95% → 90%로 떨어졌다. 2문서 질의에서 문서 다양성이 필요하다.
+- 리랭크를 켜도 `similarity_score`·citations 구조·`token_usage`는 변하지 않는다. 리랭크 토큰(케이스당 입력 약 1,500·출력 약 15토큰)은 `llm_calls(purpose="rerank")`와 `chat_metrics.rerank_*`에만 기록된다.
+- 기본값은 off 유지. 켜는 결정은 요청 제한 확인 후 한다.
+
+#### 후속
+
+- 문서 다양성: 리랭크 결과 상위 N에 같은 문서 청크가 몰릴 때 다른 문서의 최상위 청크를 1건 보장하는 규칙(또는 프롬프트에 "서로 다른 문서를 우선" 지시) 검토. r053 재측정.
+- E3c 청크 문맥 보강: r013의 `order-schema`는 후보 10건에도 없어 리랭커로 해결되지 않는다.
+- 그라운딩 판정과 리랭크를 병렬화하거나 그라운딩 입력을 리랭크 결과 상위 3건으로 고정하는 지연 최적화.
+
+### 4회차 (청크 문맥 보강 임베딩) - 실험 환경 기준
+
+E3c(`app/core/rag/chunk_context.py`, 기본 off)의 효과 실측이다. 인덱싱 시 청크마다 flash-lite가 "이 청크가 문서 안에서 어떤 맥락인지" 1~2문장을 만들어 **임베딩 입력 앞에만** 붙인다. `content` 원문과 BM25 색인은 그대로다(`CHUNK_CONTEXT_BM25=false`).
+
+- 실행일: 2026-10-28
+- 원본 파일: `data/eval/rag-v4-context.jsonl`
+- 설정: `CHUNK_CONTEXT_ENABLED=true`, `CHUNK_CONTEXT_MODEL=gemini-2.5-flash-lite`, `CHUNK_CONTEXT_MAX_DOC_CHARS=12000`, `CHUNK_CONTEXT_CONCURRENCY=1`(요청 제한 회피), `CHUNK_CONTEXT_BM25=false`, 리랭크 off. 임베딩·하이브리드 설정은 2회차와 동일
+- 명령: `RUN_LIVE_LLM=1 CHUNK_CONTEXT_ENABLED=true CHUNK_CONTEXT_CONCURRENCY=1 PYTHONPATH=. python3 scripts/eval/rag_eval.py --live --top-k 5`
+- 비교 기준: 2회차(같은 검색 설정, 문맥 없음)
+- 비용: 문서 40건 → 청크 60건 → 문맥 생성 60회(실패·재시도 0). 호출당 입력은 문서 길이에 비례(짧은 문서 약 600토큰, 12,000자 문서 약 4,000토큰), 출력 약 30토큰. 평가 스크립트가 메트릭 디렉터리를 임시 경로로 격리하므로 합계는 `llm_calls` 대신 probe로 추정했다.
+
+#### 전체 요약
+
+| 지표 | 2회차 (문맥 없음) | 4회차 (문맥 보강) | 변화 |
+| --- | --- | --- | --- |
+| overall recall@5 / MRR / hit@1 | 95.9% / 0.915 / 86.9% | 95.9% / 0.914 / 86.9% | 변화 없음 |
+| single_doc recall@5 / hit@1 | 93.3% / 83.3% | 93.3% / 83.3% | 변화 없음 |
+| distractor hit@1 | 93.3% | 86.7% | -6.7%p (r017) |
+| acl_task hit@1 | 50.0% | 75.0% | +25.0%p (r020) |
+| cross_doc recall@5 | 95.0% | 95.0% | 변화 없음 |
+| 청크 hit@5 (8건) | 100.0% | 100.0% | 유지 |
+| distractor 마진(정답 1위) 평균/최소 | 0.091 / 0.042 | 0.094 / 0.003 | 최소 마진 악화 |
+| ACL leak | 0 | 0 | 유지 |
+| out_of_corpus top similarity 최대 | 0.662 | 0.647 | - |
+
+#### 카테고리별 (4회차)
+
+| 카테고리 | n | 채점 n | recall@5 | MRR | hit@1 | ACL leak | forbidden 노출 | 청크 hit@5 | 마진 평균/최소 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| single_doc | 30 | 30 | 93.3% | 0.875 | 83.3% | - | 0 | 100.0% (6) | 0.063/-0.054 |
+| cross_doc | 10 | 10 | 95.0% | 1.000 | 100.0% | - | 0 | 100.0% (2) | 0.020/-0.053 |
+| distractor | 15 | 15 | 100.0% | 0.933 | 86.7% | - | 12 | - | 0.081/-0.020 |
+| acl_task | 10 | 4 | 100.0% | 0.875 | 75.0% | 0 | 0 | - | 0.005/-0.047 |
+| acl_restricted | 6 | 2 | 100.0% | 1.000 | 100.0% | 0 | 0 | - | 0.060/-0.007 |
+| out_of_corpus | 9 | 0 | - | - | - | 0 | 0 | - | 0.021/-0.010 |
+| overall | 80 | 61 | 95.9% | 0.914 | 86.9% | 0 | 12 | 100.0% (8) | 0.049/-0.054 |
+
+#### 케이스 변화 (정답 문서 순위, 2회차 → 4회차)
+
+| id | 카테고리 | 변화 | 비고 |
+| --- | --- | --- | --- |
+| r020 | acl_task | 2위 → 1위 | 개선 |
+| r044 | single_doc | 2위 → 1위 | 개선 |
+| r004 | single_doc | 3위 → 4위 | 악화 |
+| r012 | single_doc | 1위 → 2위 | 악화 |
+| r017 | distractor | 1위 → 2위 | 악화 |
+| r005, r013 | single_doc, cross_doc | `order-schema` 여전히 5위 밖 | 목표였던 검색 실패 2건 미회복 |
+
+#### 결론
+
+- **채택 보류.** 지표가 2회차와 사실상 같고(개선 2건, 악화 3건), 목표였던 r005·r013의 `order-schema` 회복이 없다. `order-schema`는 청크가 1개뿐인 짧은 문서라 문맥을 붙여도 임베딩이 거의 변하지 않으며, 밀어내는 쪽(`architecture-overview` 등 긴 문서의 여러 청크)이 질의와 더 가깝다.
+- 이 문서 셋은 문서당 청크가 평균 1.5개(60/40)라 "청크만 보면 문서를 모르는" 문제 자체가 작다. 문맥 보강은 긴 문서를 잘게 자른 코퍼스에서 효과를 내는 기법이므로, 실제 워크스페이스 문서(수십 청크 이상)로 재측정하기 전에는 판단을 바꾸지 않는다.
+- 비용 대비: 문서 인덱싱마다 청크 수만큼 flash-lite 호출(문서 전문을 매번 전송)이 늘고 요청 제한(429) 영향을 받는다. 효과가 확인되지 않은 상태에서 켤 이유가 없다.
+- 기본값 off 유지. 코드는 남긴다(스키마 변경 없음, off 경로는 현행과 동일함을 테스트로 고정).
+
+#### 후속
+
+- BM25 포함 변형(`CHUNK_CONTEXT_BM25=true`): 문맥 문장에 문서 제목·대상이 들어가므로 키워드 검색 쪽에서 효과가 있을 수 있다. 미실측.
+- 긴 문서 위주 코퍼스(실제 워크스페이스 데이터 또는 평가 셋에 수십 청크 문서 추가)에서 재측정.
+- r005·r013의 `order-schema`는 리랭커(후보 10건)로도 회복되지 않았다. 후보 수를 20으로 늘리거나 BM25 가중치 조정이 다음 수단이다.
+

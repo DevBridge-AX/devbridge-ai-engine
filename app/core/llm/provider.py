@@ -10,6 +10,7 @@ call_main_stream() — 메인 답변 생성 (Anthropic SSE 스트리밍)     MAI
 call_rewrite()     — 멀티턴 쿼리 재구성                           REWRITE_MODEL (provider-prefix 무관, claude-*/gpt-*/gemini-* 모두 가능)
 call_grounding()   — 그라운딩 이진 판정, JSON dict 반환           GROUNDING_MODEL (gemini-*)
 call_structured()  — JSON 구조화 응답 범용                        MAIN_MODEL    (claude-*)
+call_with_model()  — 모델 지정 단발 호출, (text, usage) 반환        호출부가 모델 지정 (리랭크 등)
 
 provider 자동 감지:
   claude-* → anthropic  (URL: anthropic_base_url/v1/messages, 헤더: x-api-key)
@@ -679,6 +680,91 @@ async def call_structured(
             thoughts_tokens=thoughts_tokens,
             finish_reason=finish_reason,
             parse_ok=parse_ok,
+            error_type=error_type,
+            http_status=http_status,
+            streamed=False,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+        )
+
+
+async def call_with_model(
+    model: str,
+    messages: list[dict],
+    system_prompt: str,
+    *,
+    max_tokens: int,
+    purpose: str,
+    response_schema: dict | None = None,
+    timeout: float = 30.0,
+) -> tuple[str, LLMUsage]:
+    """모델을 인자로 받아 단발 LLM 호출을 수행하고 (text, LLMUsage)를 반환합니다.
+
+    call_grounding과 같은 구조(provider 자동 감지, llm_calls 기록)이며 모델만 호출부가 지정합니다.
+    response_schema는 gemini에만 적용되고 anthropic/openai는 system_prompt의 JSON 지시에 의존합니다.
+    마크다운 코드펜스는 제거해서 반환하며, JSON 파싱과 검증은 호출자 책임입니다.
+    """
+    settings = get_settings()
+    provider = _detect_provider(model)
+    body = _build_body(
+        provider,
+        model,
+        messages,
+        system_prompt,
+        max_tokens=max_tokens,
+        response_schema=response_schema,
+    )
+
+    start = time.perf_counter()
+    prompt_tokens = completion_tokens = thoughts_tokens = 0
+    cache_read_tokens = cache_creation_tokens = 0
+    finish_reason: str | None = None
+    error_type: str | None = None
+    http_status: int | None = None
+    try:
+        data = await _request_once(
+            _build_url(provider, model, settings),
+            _build_headers(provider, settings),
+            body,
+            timeout,
+        )
+        text, usage_raw = _parse_response(provider, data)
+        prompt_tokens = usage_raw["input_tokens"]
+        completion_tokens = usage_raw["output_tokens"]
+        thoughts_tokens = usage_raw["thoughts_tokens"]
+        finish_reason = usage_raw["finish_reason"]
+        cache_read_tokens = usage_raw.get("cache_read_tokens", 0)
+        cache_creation_tokens = usage_raw.get("cache_creation_tokens", 0)
+
+        text = text.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+        return text, LLMUsage(
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+    except asyncio.CancelledError:
+        # 취소(예: wait_for 타임아웃)는 BaseException이라 아래 except에 안 잡힌다. 성공처럼 기록되지 않게 표시한다.
+        error_type = "CancelledError"
+        raise
+    except Exception as exc:
+        error_type = type(exc).__name__
+        if isinstance(exc, httpx.HTTPStatusError):
+            http_status = exc.response.status_code
+        raise
+    finally:
+        _record_llm_call(
+            purpose=purpose,
+            model=model,
+            provider=provider,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            thoughts_tokens=thoughts_tokens,
+            finish_reason=finish_reason,
+            parse_ok=True,
             error_type=error_type,
             http_status=http_status,
             streamed=False,

@@ -124,6 +124,27 @@ class Settings(BaseSettings):
     # 0이면 제한 없음. 양수면 판정 프롬프트의 청크 content를 이 길이로 자름
     grounding_judge_max_chunk_chars: int = Field(0, ge=0)
 
+    # LLM 리랭커 (기본 off). 켜면 후보 rerank_candidates건을 경량 LLM으로 재정렬해 상위 5건만 사용
+    rerank_enabled: bool = False
+    rerank_model: str = "gemini-2.5-flash-lite"
+    # 리랭크 입력 후보 수 (retrieve top_k, 1 이상)
+    rerank_candidates: int = Field(10, ge=1)
+    rerank_timeout_seconds: float = Field(2.0, gt=0)
+    # 리랭크 프롬프트에 넣는 청크 content 최대 길이
+    rerank_max_chunk_chars: int = Field(600, ge=100)
+
+    # 청크 문맥 보강 임베딩 (기본 off). 켜면 문서 인덱싱 시 청크마다 LLM이 문맥 1~2문장을 생성해
+    # 임베딩 입력 앞에만 붙인다(document_chunks.content 원문은 불변). 청크 수만큼 LLM 호출이 추가된다.
+    chunk_context_enabled: bool = False
+    chunk_context_model: str = "gemini-2.5-flash-lite"
+    # 문맥 생성 프롬프트에 넣는 문서 전문 최대 길이(초과분은 잘라냄)
+    chunk_context_max_doc_chars: int = Field(12000, ge=1000)
+    chunk_context_concurrency: int = Field(4, ge=1)
+    # True면 BM25 색인에도 chunk_metadata.context를 앞에 붙인다(기본은 content만)
+    chunk_context_bm25: bool = False
+    # 문맥 생성 호출이 429를 받았을 때 백오프(15·30·60초) 재시도 최대 횟수
+    chunk_context_max_retries: int = Field(3, ge=0)
+
     # BM25 하이브리드 검색
     bm25_enabled: bool = True
     bm25_cache_ttl_seconds: int = 600

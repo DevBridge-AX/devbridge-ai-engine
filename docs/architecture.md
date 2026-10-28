@@ -176,6 +176,8 @@ document_chunks
 
 이를 통해 임베딩 모델 변경이 원문 데이터 무결성에 영향을 주지 않습니다.
 
+문서 인덱싱 흐름: 파일 로드 -> 청킹 -> (선택, `CHUNK_CONTEXT_ENABLED`, 기본 off) 청크별 LLM 문맥 생성 -> 임베딩(문맥 + 원문) -> 저장. 문맥은 임베딩 입력과 `chunk_metadata`에만 쓰이고 `content`는 바뀌지 않습니다.
+
 ### 4.2 멀티턴 처리
 
 ```
@@ -184,6 +186,7 @@ turn 2+  : user_query + conversation_history ─► query_rewriter ─► rewrit
 ```
 
 - `retriever` 이전에 시맨틱 캐시 조회가 끼어들 수 있습니다(4.8 참고, 기본 off).
+- `RERANK_ENABLED=true`(기본 off)면 `retriever`가 `RERANK_CANDIDATES`건을 가져오고, `app/core/rag/reranker.py`가 경량 LLM(`RERANK_MODEL`)으로 순서만 재정렬해 상위 5건을 `grounding`에 넘깁니다(실패 시 원래 순서).
 - `query_rewriter`는 turn 1에는 호출되지 않습니다.
 - turn 2+에서는 대화 히스토리를 참고해 검색에 적합한 독립 쿼리로 재구성합니다.
 - query_rewriter를 포함한 모든 LLM 호출은 `provider.py`의 추상 인터페이스를
