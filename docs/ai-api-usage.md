@@ -385,3 +385,48 @@ RUN_LIVE_LLM=1 python3 -m pytest -m live -q tests/live/test_commit_analysis_cost
 purpose×model별 토큰 합계와 지연 p50/p95로 집계해 터미널에 출력하고,
 `data/live_runs/{YYYYMMDD-HHMMSS}.json`(`data/`는 gitignore 대상)에 저장합니다. 페르소나
 답변 미리보기도 같은 파일에 포함되므로 수동 검토에 활용합니다.
+
+## 프롬프트 캐싱 적용 판정 (E2)
+
+### 판정: 보류
+
+- Anthropic 프롬프트 캐싱은 접두부 일치 방식이며, 최소 캐시 가능 길이는 `claude-sonnet-4-6` 1,024토큰, `claude-haiku-4-5` 4,096토큰이다. 이보다 짧으면 `cache_control`을 붙여도 오류 없이 캐싱되지 않는다(`cache_creation_input_tokens: 0`).
+- 현재 Claude 호출의 고정 접두부는 모두 그 미만이다.
+  - 채팅 시스템 프롬프트(`app/core/llm/persona_prompts.py`): [페르소나 약 270자 -> 대화 이력 -> 검색 컨텍스트 -> 공통 지시 약 260자]. 고정부가 짧고, 가운데에 매 요청 달라지는 검색 컨텍스트가 있어 접두부 일치가 깨진다.
+  - 커밋 분석(`_llm_analyze_commit`): 소형 diff 프롬프트 전체가 약 850토큰이라 시스템 프롬프트는 그보다 작다.
+  - 캐시 재검증(haiku): 호출당 약 730토큰.
+- 따라서 현재는 적용을 **보류**한다. 프롬프트 구조는 바꾸지 않는다(컨텍스트를 `messages`로 옮겨도 고정부가 1,024토큰 미만이라 효과가 없고, 그라운딩·페르소나 품질 재측정이 필요하다). 반복 질의 비용은 시맨틱 캐시가 담당한다.
+
+### 재검토 조건 (D5)
+
+- 고정 시스템 프롬프트가 1,024토큰을 넘게 될 때(few-shot 추가, 페르소나 확장).
+- 멀티턴에서 같은 긴 컨텍스트를 반복 전송하는 구조로 바뀔 때.
+- 위 조건이 와도 먼저 `scripts/probe_prompt_cache.py`로 GMS 경유 캐시 **읽기**가 동작하는지 재확인한다(2026-10-28 실측에서는 기록만 되고 재사용되지 않았다).
+
+### 관측 필드
+
+`llm_calls.jsonl` 레코드에 `cache_read_tokens`, `cache_creation_tokens`가 추가된다. anthropic 응답의 `usage.cache_read_input_tokens` / `usage.cache_creation_input_tokens`를 기록하며(없으면 0), openai/gemini는 항상 0이다. 스트리밍은 `message_start` 이벤트의 `usage`에서 읽는다. `LLMUsage`와 Spring 계약(`TokenUsage`)에는 추가하지 않는다.
+
+### 확인 스크립트 실행법
+
+GMS 프록시가 `cache_control`과 캐시 usage 필드를 통과시키는지 1회 확인한다. 동일 요청을 2회 보내고 usage 키/값만 출력한다(응답 본문은 출력하지 않음).
+
+```bash
+PYTHONIOENCODING=utf-8 RUN_LIVE_LLM=1 uv run python scripts/probe_prompt_cache.py
+# haiku 확인(최소 4,096토큰이므로 텍스트가 자동으로 길어진다)
+PYTHONIOENCODING=utf-8 RUN_LIVE_LLM=1 uv run python scripts/probe_prompt_cache.py --model claude-haiku-4-5-20251001
+```
+
+### 실측 결과 - 실험 환경 기준
+
+| 항목 | 값 |
+| --- | --- |
+| 실행일 / 모델 | 2026-10-28 / `claude-sonnet-4-6` (system 3,263자, 2회 실행 = 총 4회 호출) |
+| `_ANTHROPIC_VERSION` | `2023-06-01` |
+| 1회차 usage | `input_tokens` 22, `cache_creation_input_tokens` 3,292, `cache_read_input_tokens` 0, `cache_creation.ephemeral_5m_input_tokens` 3,292, `output_tokens` 8 |
+| 2회차 usage | 1회차와 동일(`cache_creation_input_tokens` 3,292, `cache_read_input_tokens` 0) |
+| 판정 | **캐시 기록은 되지만 재사용 안 됨.** 2회 실행 모두 같은 결과 |
+
+- `cache_control`은 GMS를 통과한다(`cache_creation_input_tokens`가 3,292로 보고됨). 그러나 바로 이어서 보낸 동일 요청이 캐시를 읽지 못하고 다시 기록한다. 캐시는 조직(API 키) 단위로 격리되므로, 프록시가 업스트림 키를 요청마다 달리 쓰거나 접두부를 변형하는 것으로 추정된다. 원인은 GMS 쪽이라 이 레포에서 확정할 수 없다.
+- 결론: **GMS 경유에서는 `cache_control`을 붙이면 안 된다.** 캐시 기록은 입력 단가의 1.25배로 과금되는데 읽기 할인이 전혀 없으므로 비용만 늘어난다. 보류 판정을 유지하며, 재검토 조건(D5)에 "GMS가 캐시 읽기를 지원하는지 이 스크립트로 재확인"을 추가한다.
+- haiku는 확인하지 않았다(sonnet에서 재사용이 안 되면 같은 경로라 결과가 같을 것으로 보고 생략).
