@@ -105,6 +105,10 @@ class Settings(BaseSettings):
     # (변경 라인 수 -> 변경 파일 수 -> diff 길이 순, 동률은 배치 순서 유지)
     commit_analysis_cap_priority: Literal["order", "size"] = "order"
 
+    # 커밋 분석 LLM 호출 동시성(push 1회 배치 내). 1 = 순차(현행 동작), N = 최대 N건 동시 호출
+    # (DB 접근은 항상 순차. 429가 늘면 값을 낮춘다)
+    commit_analysis_concurrency: int = Field(1, ge=1)
+
     # provider.py 컨텍스트 길이 가드
     max_context_tokens: int = 30000
 
