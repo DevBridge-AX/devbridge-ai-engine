@@ -110,11 +110,13 @@ class BM25IndexManager:
     def _build_index(
         self, workspace_id: str, db: Session
     ) -> _CachedIndex | None:
-        rows = db.execute(
-            select(DocumentChunk.id, DocumentChunk.content).where(
-                DocumentChunk.workspace_id == workspace_id
-            )
-        ).all()
+        # chunk_context_bm25가 켜져 있으면 생성 문맥(chunk_metadata.context)도 색인 텍스트에 포함한다.
+        # 꺼져 있으면 현행과 동일하게 content만 읽는다.
+        include_context = get_settings().chunk_context_bm25
+        columns = [DocumentChunk.id, DocumentChunk.content]
+        if include_context:
+            columns.append(DocumentChunk.chunk_metadata)
+        rows = db.execute(select(*columns).where(DocumentChunk.workspace_id == workspace_id)).all()
 
         if not rows:
             return None
@@ -122,7 +124,12 @@ class BM25IndexManager:
         chunk_ids: list[int] = []
         corpus: list[list[str]] = []
         for row in rows:
-            tokens = tokenize_for_bm25(row[1])
+            text = row[1]
+            if include_context and len(row) > 2 and isinstance(row[2], dict):
+                context = row[2].get("context")
+                if context:
+                    text = f"{context}\n{text}"
+            tokens = tokenize_for_bm25(text)
             if tokens:
                 chunk_ids.append(row[0])
                 corpus.append(tokens)
