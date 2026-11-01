@@ -96,6 +96,9 @@ def test_collect_records_structure(records):
         assert all(not r["doc_key"].startswith("unknown:") for r in retrieved)
         assert isinstance(record["top_similarity"], float)
         assert all(isinstance(r["substring_hit"], bool) for r in retrieved)
+        # 시딩 조건 플래그(기본 off)
+        assert record["chunk_context"] is False
+        assert record["chunk_context_bm25"] is False
         if len(retrieved) >= 2:
             assert record["margin"] == pytest.approx(retrieved[0]["similarity"] - retrieved[1]["similarity"])
         else:

@@ -301,6 +301,15 @@ DOCUMENT_ANALYSIS_MODEL=fallback-v1   # 문서 분석 표시용 모델명
 
 인덱싱(임베딩) 토큰은 `usage_logs` 테이블에 workspace별 일 단위로 별도 누적됩니다.
 
+### 문서 인덱싱 시 청크 문맥 생성 비용 (선택, 기본 off)
+
+`CHUNK_CONTEXT_ENABLED=true`로 켜면 문서 인덱싱마다 청크 수만큼 경량 LLM 호출(`CHUNK_CONTEXT_MODEL`, 기본 `gemini-2.5-flash-lite`)이 추가됩니다. 호출마다 프롬프트에 문서 전문(`CHUNK_CONTEXT_MAX_DOC_CHARS`에서 절단)과 청크 1건이 들어가므로 입력 토큰은 대략 "청크 수 x 문서 길이"에 비례합니다.
+
+- 토큰·지연은 `llm_calls`(purpose=`chunk_context`)에 기록되며, 임베딩 토큰 전용인 `usage_logs`에는 반영되지 않습니다. Spring 대시보드에 노출하려면 별도 협의가 필요합니다.
+- 재인덱싱 시 `chunk_metadata.content_sha1`이 같은 청크는 기존 문맥을 재사용해 LLM을 다시 부르지 않습니다.
+- GMS 경유 모델이 429(RESOURCE_EXHAUSTED)를 돌려주면 `CHUNK_CONTEXT_MAX_RETRIES`(기본 3)회까지 15·30·60초 백오프로 재시도하며, 그래도 실패한 청크는 문맥 없이 원문만 임베딩합니다(fail-open).
+- 인덱싱 메트릭에 `context_llm_calls`(재시도 포함 실제 호출 수), `context_failed`, `context_reused`, `context_retried`, `context_ms`가 추가됩니다.
+
 ---
 
 ## 라이브 검증 실행법

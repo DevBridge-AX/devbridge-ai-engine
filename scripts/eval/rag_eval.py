@@ -168,6 +168,9 @@ async def _collect_records(
                             else None
                         ),
                         "top_similarity": max((r["similarity"] for r in retrieved), default=0.0),
+                        # 시딩 조건 기록(CHUNK_CONTEXT_ENABLED/CHUNK_CONTEXT_BM25): 파일만 봐도 조건을 알 수 있게 한다.
+                        "chunk_context": bool(get_settings().chunk_context_enabled),
+                        "chunk_context_bm25": bool(get_settings().chunk_context_bm25),
                         **rerank_fields,
                     }
                 )
