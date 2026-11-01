@@ -184,6 +184,7 @@ turn 2+  : user_query + conversation_history ─► query_rewriter ─► rewrit
 ```
 
 - `retriever` 이전에 시맨틱 캐시 조회가 끼어들 수 있습니다(4.8 참고, 기본 off).
+- `RERANK_ENABLED=true`(기본 off)면 `retriever`가 `RERANK_CANDIDATES`건을 가져오고, `app/core/rag/reranker.py`가 경량 LLM(`RERANK_MODEL`)으로 순서만 재정렬해 상위 5건을 `grounding`에 넘깁니다(실패 시 원래 순서).
 - `query_rewriter`는 turn 1에는 호출되지 않습니다.
 - turn 2+에서는 대화 히스토리를 참고해 검색에 적합한 독립 쿼리로 재구성합니다.
 - query_rewriter를 포함한 모든 LLM 호출은 `provider.py`의 추상 인터페이스를

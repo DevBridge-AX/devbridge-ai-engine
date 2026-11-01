@@ -11,6 +11,9 @@ API/DB/파일 I/O 없이 레코드만 다룹니다. `scripts/eval/rag_eval.py --
  expected_substrings, margin}
 - expected_substrings / substring_hit / margin 은 2회차(E3a)에서 추가된 선택 필드이며, 없는 레코드
   (1회차 jsonl)는 청크 적중·마진 집계에서 제외됩니다.
+- --rerank 수집 레코드는 reranked(상위 top_k건, retrieved와 같은 dict 구조)·rerank_stage·
+  rerank_latency_ms를 추가로 가지며, retrieved는 리랭크 전 후보 K건 전체(rank 1..K)입니다.
+  compute_metrics(source="reranked")가 reranked로 집계하고, 키가 없는 레코드는 retrieved로 대체합니다.
 - rank는 1부터 시작하며, 같은 doc_key의 여러 청크가 있으면 가장 높은 순위만 의미를 가집니다.
 - expected_doc_keys가 비어 있는 케이스(acl 거절, out_of_corpus)는 recall/MRR/hit@1 집계에서 제외됩니다.
 """
@@ -129,14 +132,36 @@ def _aggregate(records: list[dict], k: int) -> dict:
     }
 
 
-def compute_metrics(records: list[dict], k: int = 5) -> dict:
+def _with_source(records: list[dict], source: str) -> list[dict]:
+    """source 키의 검색 결과를 retrieved 자리에 넣은 레코드 사본을 만듭니다(없으면 retrieved 유지)."""
+    if source == "retrieved":
+        return records
+    derived = []
+    for record in records:
+        items = record.get(source)
+        if items is None:
+            derived.append(record)
+            continue
+        derived.append(
+            {
+                **record,
+                "retrieved": items,
+                "top_similarity": max((r["similarity"] for r in items), default=0.0),
+            }
+        )
+    return derived
+
+
+def compute_metrics(records: list[dict], k: int = 5, source: str = "retrieved") -> dict:
     """전체/카테고리별 recall@k, MRR, hit@1, ACL leak 건수, forbidden 노출 건수를 계산합니다.
 
     out_of_corpus 카테고리에는 top_similarity의 mean/max를, distractor 카테고리에는 정답이 1위인
     케이스의 마진 평균(distractor_margin_mean)과 정답 1위·forbidden 2위 케이스의 마진
     (forbidden_second_count / forbidden_second_margin_mean)을 추가합니다.
     청크 적중(chunk_hit_at_k)은 expected_substrings가 있는 레코드만, 마진은 결과 2건 이상인 레코드만 채점합니다.
+    source는 집계할 검색 결과 키("retrieved" 또는 "reranked")이며, 레코드에 그 키가 없으면 "retrieved"를 씁니다.
     """
+    records = _with_source(records, source)
     by_category: dict[str, list[dict]] = {}
     for record in records:
         by_category.setdefault(record["category"], []).append(record)
@@ -216,4 +241,38 @@ def render_markdown(metrics: dict) -> str:
             f"out_of_corpus top similarity: mean={_fmt(ooc['top_similarity_mean'], pct=False)}, "
             f"max={_fmt(ooc['top_similarity_max'], pct=False)}",
         ]
+    return "\n".join(lines)
+
+
+def has_reranked(records: list[dict]) -> bool:
+    """레코드 중 하나라도 reranked 결과를 가지면 True."""
+    return any("reranked" in r for r in records)
+
+
+def render_diff_markdown(baseline: dict, reranked: dict) -> str:
+    """기준선 대비 리랭크의 카테고리별 recall@k/MRR/hit@1 차이(리랭크 - 기준선) 표를 렌더링합니다."""
+    k = reranked["k"]
+
+    def delta(a: float | None, b: float | None, pct: bool) -> str:
+        if a is None or b is None:
+            return "-"
+        d = b - a
+        return f"{d * 100:+.1f}%p" if pct else f"{d:+.3f}"
+
+    lines = [
+        f"| 카테고리 | recall@{k} 차이 | MRR 차이 | hit@1 차이 |",
+        "| --- | --- | --- | --- |",
+    ]
+
+    def row(name: str, base: dict, rer: dict) -> str:
+        return (
+            f"| {name} | {delta(base['recall_at_k'], rer['recall_at_k'], True)} "
+            f"| {delta(base['mrr'], rer['mrr'], False)} "
+            f"| {delta(base['hit_at_1'], rer['hit_at_1'], True)} |"
+        )
+
+    lines.append(row("overall", baseline["overall"], reranked["overall"]))
+    for name in sorted(reranked["categories"]):
+        if name in baseline["categories"]:
+            lines.append(row(name, baseline["categories"][name], reranked["categories"][name]))
     return "\n".join(lines)

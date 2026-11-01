@@ -266,3 +266,78 @@ class TestCallGroundingHttpError:
 
         with pytest.raises(httpx.ConnectError):
             await call_grounding("p")
+
+
+class TestCallWithModel:
+    """call_with_model: 모델 인자 기준 provider 분기(URL/헤더/schema)와 반환 계약."""
+
+    @pytest.fixture(autouse=True)
+    def full_settings(self, monkeypatch):
+        monkeypatch.setattr(
+            provider,
+            "get_settings",
+            lambda: SimpleNamespace(
+                gemini_base_url=_BASE_URL,
+                anthropic_base_url="http://gms.test/anthropic",
+                gms_api_key=_API_KEY,
+            ),
+        )
+
+    async def test_gemini_url_headers_and_schema(self, mock_gemini):
+        captured = mock_gemini(lambda req: httpx.Response(
+            200, json=_gemini_response('{"ranking": [2, 1]}', 50, 7)
+        ))
+        schema = {"type": "OBJECT", "properties": {"ranking": {"type": "ARRAY"}}}
+
+        text, usage = await provider.call_with_model(
+            "gemini-x",
+            [{"role": "user", "content": "q"}],
+            "sys",
+            max_tokens=64,
+            purpose="rerank",
+            response_schema=schema,
+        )
+
+        req = captured[0]
+        assert str(req.url) == f"{_BASE_URL}/models/gemini-x:generateContent"
+        assert req.headers["x-goog-api-key"] == _API_KEY
+        body = json.loads(req.content)
+        assert body["generationConfig"]["maxOutputTokens"] == 64
+        assert body["generationConfig"]["responseSchema"] == schema
+        assert text == '{"ranking": [2, 1]}'
+        assert usage == LLMUsage(model="gemini-x", prompt_tokens=50, completion_tokens=7)
+
+    async def test_anthropic_url_headers_without_schema(self, mock_gemini):
+        captured = mock_gemini(lambda req: httpx.Response(200, json={
+            "content": [{"type": "text", "text": "```json\n{\"ranking\": [1]}\n```"}],
+            "usage": {"input_tokens": 30, "output_tokens": 5},
+            "stop_reason": "end_turn",
+        }))
+
+        text, usage = await provider.call_with_model(
+            "claude-haiku-test",
+            [{"role": "user", "content": "q"}],
+            "sys",
+            max_tokens=64,
+            purpose="rerank",
+            response_schema={"type": "OBJECT"},
+        )
+
+        req = captured[0]
+        assert str(req.url) == "http://gms.test/anthropic/v1/messages"
+        assert req.headers["x-api-key"] == _API_KEY
+        assert "anthropic-version" in req.headers
+        body = json.loads(req.content)
+        assert body["system"] == "sys"
+        assert "responseSchema" not in json.dumps(body)
+        assert text == '{"ranking": [1]}'
+        assert usage.model == "claude-haiku-test"
+        assert usage.prompt_tokens == 30 and usage.completion_tokens == 5
+
+    async def test_http_error_propagates(self, mock_gemini):
+        mock_gemini(lambda req: httpx.Response(500, json={}))
+        with pytest.raises(httpx.HTTPStatusError):
+            await provider.call_with_model(
+                "gemini-x", [{"role": "user", "content": "q"}], "sys",
+                max_tokens=64, purpose="rerank",
+            )

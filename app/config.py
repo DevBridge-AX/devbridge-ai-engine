@@ -124,6 +124,15 @@ class Settings(BaseSettings):
     # 0이면 제한 없음. 양수면 판정 프롬프트의 청크 content를 이 길이로 자름
     grounding_judge_max_chunk_chars: int = Field(0, ge=0)
 
+    # LLM 리랭커 (기본 off). 켜면 후보 rerank_candidates건을 경량 LLM으로 재정렬해 상위 5건만 사용
+    rerank_enabled: bool = False
+    rerank_model: str = "gemini-2.5-flash-lite"
+    # 리랭크 입력 후보 수 (retrieve top_k, 1 이상)
+    rerank_candidates: int = Field(10, ge=1)
+    rerank_timeout_seconds: float = Field(2.0, gt=0)
+    # 리랭크 프롬프트에 넣는 청크 content 최대 길이
+    rerank_max_chunk_chars: int = Field(600, ge=100)
+
     # BM25 하이브리드 검색
     bm25_enabled: bool = True
     bm25_cache_ttl_seconds: int = 600

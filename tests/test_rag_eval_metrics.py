@@ -192,3 +192,54 @@ def test_rag_eval_live_blocked_without_gate(monkeypatch, capsys):
 
     monkeypatch.delenv("RUN_LIVE_LLM", raising=False)
     assert main(["--live"]) == 1
+
+
+def _reranked_rec(id, category, expected, retrieved_keys, reranked_keys):
+    rec = _rec(id, category, expected, retrieved_keys)
+    rec["reranked"] = [
+        {"doc_key": k, "similarity": 0.9 - 0.1 * i, "rank": i + 1, "substring_hit": False}
+        for i, k in enumerate(reranked_keys)
+    ]
+    return rec
+
+
+def test_compute_metrics_source_reranked_and_fallback():
+    with_rerank = _reranked_rec("a", "single_doc", ["d1"], ["x", "d1", "y"], ["d1", "x", "y"])
+    without = _rec("b", "single_doc", ["d1"], ["x", "d1"])
+
+    base = compute_metrics([with_rerank, without], k=5)
+    rer = compute_metrics([with_rerank, without], k=5, source="reranked")
+
+    assert base["overall"]["hit_at_1"] == 0.0
+    # reranked가 있는 레코드는 그 순서로, 없는 레코드는 retrieved로 대체
+    assert rer["overall"]["hit_at_1"] == 0.5
+    assert rer["overall"]["mrr"] == pytest.approx((1.0 + 0.5) / 2)
+    # source 기본값은 기존 동작과 동일
+    assert compute_metrics([with_rerank], k=5) == compute_metrics([with_rerank], k=5, source="retrieved")
+
+
+def test_rag_eval_from_cache_prints_baseline_rerank_and_diff(tmp_path, capsys):
+    from scripts.eval.rag_eval import main
+
+    cache = tmp_path / "rag.jsonl"
+    rec = _reranked_rec("a", "single_doc", ["d1"], ["x", "d1", "y"], ["d1", "x", "y"])
+    cache.write_text(json.dumps(rec, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    assert main(["--from-cache", str(cache)]) == 0
+    out = capsys.readouterr().out
+    assert "기준선 (retrieved)" in out and "리랭크 (reranked)" in out
+    assert "차이 (리랭크 - 기준선)" in out
+    assert "| single_doc | +0.0%p | +0.500 | +100.0%p |" in out
+
+
+def test_rag_eval_rerank_requires_enabled_setting(monkeypatch, capsys):
+    from app.config import get_settings
+    from scripts.eval.rag_eval import main
+
+    monkeypatch.delenv("RERANK_ENABLED", raising=False)
+    get_settings.cache_clear()
+    try:
+        assert main(["--live", "--rerank"]) == 1
+    finally:
+        get_settings.cache_clear()
+    assert "RERANK_ENABLED" in capsys.readouterr().err
